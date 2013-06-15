@@ -16,7 +16,16 @@ Once you have a copy of Zsnap, edit the configuration file to match your needs a
 
 ## Usage
 
-Keep in mind that samba's VFS object only works if you share the root of your ZFS dataset.
+    $ ./zsnap.sh your_file.conf status
+    $ ./zsnap.sh your_file.conf create
+
+You may run multiple instances of zsnap by creating mutliple configuration files, one per dataset. You can easily add zsnap as cron task which will take snapshots at a given time.
+The number of kept snapshots is handled by zsnap, but you may also control it's behaviour manually by using the following commands:
+
+    $ ./zsnap.sh dataset.conf destroyoldest
+    $ ./zsnap.sh other_dataset.conf destroyall
+
+Zsnap will mount every snapshot in Samba's VFS object shadow_copy friendly format. Keep in mind that samba's VFS object only works if you share the root of your ZFS dataset or subdataset.
 
 ## Author
 
