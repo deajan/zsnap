@@ -6,14 +6,13 @@
 ZSNAP_VERSION=0.8 #### Build 2704201302
 
 LOG_FILE=/var/log/zsnap_${ZFS_VOLUME##*/}.log
-DEBUG=yes
+DEBUG=no
 SCRIPT_PID=$$
 
 LOCAL_USER=$(whoami)
 LOCAL_HOST=$(hostname)
 
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
-ZFS_POOL=$(echo $ZFS_VOLUME | cut -d'/' -f1)
 
 error_alert=0
 
@@ -53,7 +52,7 @@ function SendAlert
         cat $LOG_FILE | gzip -9 > /tmp/zsnap_lastlog.gz
         if type -p mutt > /dev/null 2>&1
         then
-                echo $MAIL_ALERT_MSG | $(which mutt) -x -s "Backup alert for $BACKUP_ID" $DESTINATION_MAIL -a /tmp/obackup_lastlog.gz
+                echo $MAIL_ALERT_MSG | $(which mutt) -x -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAIL -a /tmp/zsnap_lastlog.gz
                 if [ $? != 0 ]
                 then
                         Log "WARNING: Cannot send alert email via $(which mutt) !!!"
@@ -62,11 +61,11 @@ function SendAlert
                 fi
         elif type -p mail > /dev/null 2>&1
         then
-                echo $MAIL_ALERT_MSG | $(which mail) -a /tmp/obackup_lastlog.gz -s "Backup alert for $BACKUP_ID" $DESTINATION_MAIL
+                echo $MAIL_ALERT_MSG | $(which mail) -a /tmp/zsnap_lastlog.gz -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAIL
                 if [ $? != 0 ]
                 then
                         Log "WARNING: Cannot send alert email via $(which mail) with attachments !!!"
-                        echo $MAIL_ALERT_MSG | $(which mail) -s "Backup alert for $BACKUP_ID" $DESTINATION_MAIL
+                        echo $MAIL_ALERT_MSG | $(which mail) -s "Zsnap script alert for $ZFS_VOLMUE" $DESTINATION_MAIL
                         if [ $? != 0 ]
                         then
                                 Log "WARNING: Cannot send alert email via $(which mail) without attachments !!!"
@@ -86,18 +85,19 @@ function LoadConfigFile
 {
         if [ ! -f "$1" ]
         then
-                LogError "Cannot load backup configuration file [$1]. Backup cannot start."
+                LogError "Cannot load zsnap configuration file [$1]. Zsnap script cannot work."
                 return 1
         elif [[ $1 != *.conf ]]
         then
-                LogError "Wrong configuration file supplied [$1]. Backup cannot start."
+                LogError "Wrong configuration file supplied [$1]. Zsnap cannot work."
+		return 1
         else
-                egrep '^#|^[^ ]*=[^;&]*'  "$1" > "/dev/shm/znsap_config_$SCRIPT_PID"
+                egrep '^#|^[^ ]*=[^;&]*'  "$1" > "/dev/shm/zsnap_config_$SCRIPT_PID"
                 source "/dev/shm/zsnap_config_$SCRIPT_PID"
         fi
 }
 
-funtion CheckEnvironment
+function CheckEnvironment
 {
 	if ! type -p zfs > /dev/null 2>&1
 	then
@@ -310,13 +310,18 @@ function Status
 	done
 }
 
+function Init
+{
+	ZFS_POOL=$(echo $ZFS_VOLUME | cut -d'/' -f1)
+}
+
 function Usage
 {
-        echo "zsnap /path/to/config/file [option]"
+        echo "zsnap /path/to/config/file [action]"
         echo
         echo "This script provides an easy way to manage snapshots and link them against samba's vfs object shadow_copy"
         echo "You may do whatever open stuff you want with this script as long as the original creator's copyleft remains"
-        echo "zfs-snapshots.sh $ZSNAP-VERSION written in 2010-2013 Orsiris de Jong / http://www.badministrateur.com"
+        echo "zsnap.sh $ZSNAP-VERSION written in 2010-2013 Orsiris de Jong / http://www.badministrateur.com"
         echo
         echo "zsnap configfile status"
         echo "Lists status info about zfs pool, snapshots and clones"
@@ -354,10 +359,11 @@ if [ $? == 0 ]
 then
         if [ "$1" != "" ]
         then
-                LoadConfigFile $1
+                LoadConfigFile "$1"
                 if [ $? == 0 ]
                 then
-			case $2 in
+			Init
+			case "$2" in
 				destroyoldest)
 				DestroySnaps
 				;;
@@ -381,16 +387,16 @@ then
 				;;
 				destroy)
 				if [ "$3" != "" ]
-        			then
-                			DestroySnap $3
-        			else
-                		Usage
-        			fi
+				then
+					DestroySnap "$3"
+				else
+					Usage
+				fi
 				;;
 				*)
 				Usage
 				;;
-			easc
+			esac
                 else
                         LogError "Configuration file could not be loaded."
                         exit
@@ -406,5 +412,5 @@ then
         SendAlert
         LogError "Zsnap script finished with errors."
 else
-        Log "Znsap  script finshed."
+        Log "Zsnap script finshed."
 fi
