@@ -15,13 +15,14 @@ LOCAL_HOST=$(hostname)
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
 error_alert=0
+silent=0
 
 function Log
 {
         # Writes a standard log file including normal operation
         DATE=$(date)
         echo "$DATE - $1" >> $LOG_FILE
-        if [ "$DEBUG" == "yes" ]
+        if [ $silent -ne 1 ]
         then
                 echo "$1"
         fi
@@ -149,8 +150,7 @@ function DestroySnap
 	then
 		LogError "DestroySnap: Cannot destroy snapshot $1"
 		return 1
-	elif [ "$DEBUG" == "yes" ]
-	then
+	else
 		Log "DestroySnap: Snapshot $1 destroyed"
 	fi
 	
@@ -263,10 +263,8 @@ function CreateSnap
 	then
 		LogError "CreateSnap: Cannot create snapshot $ZFS_VOLUME@$SNAP_TIME"
 		return 1
-	elif [ "$DEBUG" == "yes" ]
-	then
-		Log "CreateSnap: Snapshot $ZFS_VOLUME@$SNAP_TIME created"
 	fi
+	Log "CreateSnap: Snapshot $ZFS_VOLUME@$SNAP_TIME created"
 	MountSnaps
 }
 
@@ -275,8 +273,11 @@ function VerifyParamsAndCreateSnap
 {
 	GetZvolUsage
 	CountSnaps
-	Log "There are currently $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
-	
+	if [ "$DEBUG" == "yes" ]
+	then
+		Log "There are currently $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
+	fi
+
 	while [ $MAX_SNAPSHOTS -lt $SNAP_COUNT ]
 	do
 		DestroySnaps
@@ -290,7 +291,11 @@ function VerifyParamsAndCreateSnap
 		CountSnaps
 	done
 
-	Log "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage" 	
+	if [ "$DEBUG" == "yes" ]
+	then
+		Log "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
+	fi
+
 	CreateSnap
 }
 
@@ -317,35 +322,19 @@ function Init
 
 function Usage
 {
-        echo "zsnap /path/to/config/file [action]"
-        echo
-        echo "This script provides an easy way to manage snapshots and link them against samba's vfs object shadow_copy"
-        echo "You may do whatever open stuff you want with this script as long as the original creator's copyleft remains"
-        echo "zsnap.sh $ZSNAP-VERSION written in 2010-2013 Orsiris de Jong / http://www.badministrateur.com"
-        echo
-        echo "zsnap configfile status"
-        echo "Lists status info about zfs pool, snapshots and clones"
-        echo
-        echo "zsnap configfile createsimple"
-        echo "This will create a snapshot, create a clone and mount it in a shadow copy style folder in the samba share folder."
-        echo
-        echo "zsnap configfile create"
-        echo "This will verify the number of current snapshots, destroy them if there are more than SNAPMAX, verify current disk usage,"
-        echo "and destroy snapshots until disk usage gets lower than MAXSPACE. It will stop destoying snapshots regardless of disk usage if"
-        echo "the number of remaining snapshots gets is less or equal to SNAPMIN."
-        echo
-        echo "zsnap configfile  destroyoldest"
-        echo "This will remove the oldest snapshot on the system, including it's clone."
-        echo
-        echo "zsnap configfile destroyall"
-        echo "This will remove all snapshots on the system, including their clones."
-        echo
-        echo "zsnap configfile destroy zvolume@YYYY.MM.DD-HH.MM.SS"
-        echo "This will destroy a defined snapshot."
-        echo
-        echo "Hope you'll have fun."
-        echo
-        echo "Debugging parameters: mount umount"
+	echo "Zsnap $ZSNAP-VERSION written in 2010-2013 by Orsiris "Ozy" de Jong | ozy@badministrateur.com"
+	echo "Manages snapshot of a given dataset and mounts them as subdirectories of dataset."
+	echo ""
+        echo "Usage: zsnap /path/to/snapshot.conf [status|createsimple|create|destroyoldest|destroyall|destroy zvolume@YYYY.MM.DD-HH.MM.SS|mount|umount]"
+	echo
+        echo "status - List status info"
+        echo "createsimple - Will create a snapshot and mount it without any prior checks."
+	echo "create - Will verifiy number of snapshots, destroy them until there are less than SNAPMAX, keeping at least SNAPMIN depending of disk usage, then create a new snapshot."
+	echo "destroyoldest - Will destroy the oldest snapshot of the dataset."
+	echo "destroyall - Will destroy all snapshots of the dataset."
+	echo "destroy yourdataset@YYYY.MM.DD-HH.MM.SS - Will destroy a given snapshot."
+	echo "mount - Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
+	echo "umount - Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
 }
 
 if [ "$DEBUG" == "yes" ]
@@ -412,5 +401,8 @@ then
         SendAlert
         LogError "Zsnap script finished with errors."
 else
-        Log "Zsnap script finshed."
+	if [ "$DEBUG" == "yes" ]
+	then
+        	Log "Zsnap script finshed."
+	fi
 fi
