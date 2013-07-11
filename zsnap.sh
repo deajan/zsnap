@@ -3,7 +3,7 @@
 #### ZFS snapshot management script
 #### (L) 2010-2013 by Orsiris "Ozy" de Jong (www.badministrateur.com)
 
-ZSNAP_VERSION=0.8 #### Build 2704201302
+ZSNAP_VERSION=0.8 #### Build 0807201301
 
 LOG_FILE=/var/log/zsnap_${ZFS_VOLUME##*/}.log
 DEBUG=no
@@ -53,7 +53,7 @@ function SendAlert
         cat $LOG_FILE | gzip -9 > /tmp/zsnap_lastlog.gz
         if type -p mutt > /dev/null 2>&1
         then
-                echo $MAIL_ALERT_MSG | $(which mutt) -x -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAIL -a /tmp/zsnap_lastlog.gz
+                echo $MAIL_ALERT_MSG | $(which mutt) -x -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAILS -a /tmp/zsnap_lastlog.gz
                 if [ $? != 0 ]
                 then
                         Log "WARNING: Cannot send alert email via $(which mutt) !!!"
@@ -62,11 +62,11 @@ function SendAlert
                 fi
         elif type -p mail > /dev/null 2>&1
         then
-                echo $MAIL_ALERT_MSG | $(which mail) -a /tmp/zsnap_lastlog.gz -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAIL
+                echo $MAIL_ALERT_MSG | $(which mail) -a /tmp/zsnap_lastlog.gz -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAILS
                 if [ $? != 0 ]
                 then
                         Log "WARNING: Cannot send alert email via $(which mail) with attachments !!!"
-                        echo $MAIL_ALERT_MSG | $(which mail) -s "Zsnap script alert for $ZFS_VOLMUE" $DESTINATION_MAIL
+                        echo $MAIL_ALERT_MSG | $(which mail) -s "Zsnap script alert for $ZFS_VOLMUE" $DESTINATION_MAILS
                         if [ $? != 0 ]
                         then
                                 Log "WARNING: Cannot send alert email via $(which mail) without attachments !!!"
@@ -335,6 +335,7 @@ function Usage
 	echo "destroy yourdataset@YYYY.MM.DD-HH.MM.SS - Will destroy a given snapshot."
 	echo "mount - Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
 	echo "umount - Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
+	exit 1
 }
 
 if [ "$DEBUG" == "yes" ]
@@ -388,11 +389,11 @@ then
 			esac
                 else
                         LogError "Configuration file could not be loaded."
-                        exit
+                        exit 1
                 fi
         else
                 LogError "No configuration file provided."
-                exit
+                exit 1
         fi
 fi
 
