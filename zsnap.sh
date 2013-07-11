@@ -257,7 +257,12 @@ function UnmountSnaps
 function CreateSnap
 {
 	UnmountSnaps
-	SNAP_TIME=$(date -u +%Y.%m.%d-%H.%M.%S)
+	if [ "$USE_UTC" != "no" ]
+	then
+		SNAP_TIME=$(date -u +%Y.%m.%d-%H.%M.%S)
+	else
+		SNAP_TIME=$(date +%Y.%m.%d-%H.%M.%S)
+	fi
 	$(which zfs) snapshot $ZFS_VOLUME@$SNAP_TIME
 	if [ $? != 0 ]
 	then
