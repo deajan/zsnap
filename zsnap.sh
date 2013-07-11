@@ -5,9 +5,11 @@
 
 ZSNAP_VERSION=0.8 #### Build 0807201301
 
-LOG_FILE=/var/log/zsnap_${ZFS_VOLUME##*/}.log
+## Default log file if configuration file is not loaded
+LOG_FILE=/var/log/zsnap.log
 DEBUG=no
 SCRIPT_PID=$$
+
 
 LOCAL_USER=$(whoami)
 LOCAL_HOST=$(hostname)
@@ -15,14 +17,13 @@ LOCAL_HOST=$(hostname)
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
 error_alert=0
-silent=0
 
 function Log
 {
         # Writes a standard log file including normal operation
         DATE=$(date)
         echo "$DATE - $1" >> $LOG_FILE
-        if [ $silent -ne 1 ]
+        if [ "$SILENT" != "no" ]
         then
                 echo "$1"
         fi
@@ -323,11 +324,12 @@ function Status
 function Init
 {
 	ZFS_POOL=$(echo $ZFS_VOLUME | cut -d'/' -f1)
+	LOG_FILE=/var/log/zsnap_${ZFS_VOLUME##*/}.log
 }
 
 function Usage
 {
-	echo "Zsnap $ZSNAP-VERSION written in 2010-2013 by Orsiris "Ozy" de Jong | ozy@badministrateur.com"
+	echo "Zsnap $ZSNAP_VERSION written in 2010-2013 by Orsiris "Ozy" de Jong | ozy@netpower.fr"
 	echo "Manages snapshot of a given dataset and mounts them as subdirectories of dataset."
 	echo ""
         echo "Usage: zsnap /path/to/snapshot.conf [status|createsimple|create|destroyoldest|destroyall|destroy zvolume@YYYY.MM.DD-HH.MM.SS|mount|umount]"
@@ -340,7 +342,7 @@ function Usage
 	echo "destroy yourdataset@YYYY.MM.DD-HH.MM.SS - Will destroy a given snapshot."
 	echo "mount - Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
 	echo "umount - Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
-	exit 1
+	exit 128
 }
 
 if [ "$DEBUG" == "yes" ]
