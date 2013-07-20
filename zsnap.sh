@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#### ZFS snapshot management script
-#### (L) 2010-2013 by Orsiris "Ozy" de Jong (www.badministrateur.com)
+###### ZFS snapshot management script - Samba vfs_object previous versions friendly
+###### (L) 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
 
-ZSNAP_VERSION=0.8 #### Build 0807201301
+ZSNAP_VERSION=0.8 #### Build 2007201301
 
 ## Default log file if configuration file is not loaded
 LOG_FILE=/var/log/zsnap.log
@@ -16,14 +16,12 @@ LOCAL_HOST=$(hostname)
 
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
-error_alert=0
-
 function Log
 {
         # Writes a standard log file including normal operation
         DATE=$(date)
         echo "$DATE - $1" >> $LOG_FILE
-        if [ "$SILENT" != "no" ]
+        if [ $silent -ne 1 ]
         then
                 echo "$1"
         fi
@@ -48,6 +46,21 @@ function TrapStop
         LogError " /!\ WARNING: Manual exit of zsnap script. zfs snapshots may not be mounted."
         exit 1
 }
+
+function TrapQuit
+{
+	if [ $error_alert -ne 0 ]
+	then
+        	SendAlert
+        	LogError "Zsnap script finished with errors."
+	else
+        	if [ "$DEBUG" == "yes" ]
+        	then
+                	Log "Zsnap script finshed."
+        	fi
+	fi
+}
+
 
 function SendAlert
 {
@@ -122,7 +135,7 @@ function CountSnaps
 	then
 		LogError "CountSnaps: Cannot count snapshots of volume $ZFS_VOLUME"
 		return 1
-	elif [ "$DEBUG" == "yes" ]
+	elif [ $verbose -eq 1 ]
 	then
 		Log "CountSnaps: There are $SNAP_COUNT snapshots in $ZFS_VOLUME"
 		return 0
@@ -140,7 +153,7 @@ function DestroySnap
 		then
 			LogError "DestroySnap: Cannot unmount snapshot $1 from $mountpoint"
 			return 1
-		elif [ "$DEBUG" == "yes" ]
+		elif [ $verbose -eq 1 ]
 		then
 			Log "DestroySnap: Snapshot $1 unmounted from $mountpoint"
 		fi
@@ -152,9 +165,9 @@ function DestroySnap
 		LogError "DestroySnap: Cannot destroy snapshot $1"
 		return 1
 	else
-		Log "DestroySnap: Snapshot $1 destroyed"
+	Log "DestroySnap: Snapshot $1 destroyed"
 	fi
-	
+
 	if [ -d $mountpoint ] && [ "$mountpoint" != "" ]
 	then
 		rm -r $mountpoint
@@ -162,7 +175,7 @@ function DestroySnap
 		then
 			LogError "DestroySnap: Cannot delete mountpoint $mountpoint"
 			return 1
-		elif [ "$DEBUG" == "yes" ]
+		elif [ $verbose -eq 1 ]
 		then
 			Log "DestroySnap: Mountpoint $mountpoint deleted"
 		fi
@@ -190,7 +203,7 @@ function GetZvolUsage
 	then
 		LogError "GetZvolUsage: Cannot get disk usage of pool $ZFS_POOL"
 		return 1
-	elif [ "$DEBUG" == "yes" ]
+	elif [ $verbose -eq 1 ]
 	then
 		Log "GetZvolUsage: Disk usage of $ZFS_POOL = $USED_SPACE %"
 	fi
@@ -210,7 +223,7 @@ function MountSnaps
 			then
 				LogError "MountSnaps: Cannot create mountpoint directory $zvol_mountpoint/$snap_mountpoint"
 				return 1
-			elif [ "$DEBUG" == "yes" ]
+			elif [ $verbose -eq 1 ]
 			then
 				Log "MountSnaps: Created mountpoint directory $zvol_mountpount/@GMT-$snap_mountpoint"
 			fi
@@ -219,7 +232,7 @@ function MountSnaps
 			then
 				LogError "MountSnaps: Cannot mount $snap on $zvol_mountpoint/@GMT-$snap_mountpoint"
 				return 1
-			elif [ "$DEBUG" == "yes" ]
+			elif [ $verbose -eq 1 ]
 			then
 				Log "MountSnaps: Snapshot $snap mounted on $zvol_mountpoint/@GMT-$snap_mountpoint"
 			fi
@@ -237,7 +250,7 @@ function UnmountSnaps
                 then
                         LogError "UnmountSnaps: Cannot unmount $mountpoint"
                         return 1
-                elif [ "$DEBUG" == "yes" ]
+                elif [ $verbose -eq 1 ]
 		then
                         Log "UnmountSnaps: $mountpoint unmounted"
                 fi
@@ -247,7 +260,7 @@ function UnmountSnaps
                 then
                         LogError "UnmountSnaps: Cannot delete mountpoint $mountpoint"
                         return 1
-                elif [ "$DEBUG" == "yes" ]
+                elif [ $verbose -eq 1 ]
 		then
                         Log "UnmountSnaps: Mountpoint $mountpoint deleted"
                 fi
@@ -279,7 +292,7 @@ function VerifyParamsAndCreateSnap
 {
 	GetZvolUsage
 	CountSnaps
-	if [ "$DEBUG" == "yes" ]
+	if [ $verbose -eq 1 ]
 	then
 		Log "There are currently $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
 	fi
@@ -297,7 +310,7 @@ function VerifyParamsAndCreateSnap
 		CountSnaps
 	done
 
-	if [ "$DEBUG" == "yes" ]
+	if [ $verbose -eq 1 ]
 	then
 		Log "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
 	fi
@@ -323,6 +336,16 @@ function Status
 
 function Init
 {
+	set -o pipefail
+	set -o errtrace
+
+        trap TrapStop SIGINT SIGQUIT SIGKILL SIGTERM SIGHUP
+	trap TrapQuit EXIT
+	if [ "$DEBUG" == "yes" ]
+	then
+        	trap 'TrapError ${LINENO} $?' ERR
+	fi
+
 	ZFS_POOL=$(echo $ZFS_VOLUME | cut -d'/' -f1)
 	LOG_FILE=/var/log/zsnap_${ZFS_VOLUME##*/}.log
 }
@@ -345,11 +368,26 @@ function Usage
 	exit 128
 }
 
-if [ "$DEBUG" == "yes" ]
-then
-	trap 'TrapError ${LINENO} $?' ERR
-fi
-trap TrapStop SIGINT SIGQUIT
+# General flags
+silent=0
+verbose=0
+# Alert flags
+error_alert=0
+
+for i in "$@"
+do
+	case $i in
+		--silent)
+		silent=1
+		;;
+		--verbose)
+		verbose=1
+		;;
+		--help|-h)
+		Usage
+		;;
+	esac
+done
 
 CheckEnvironment
 if [ $? == 0 ]
@@ -402,15 +440,4 @@ then
                 LogError "No configuration file provided."
                 exit 1
         fi
-fi
-
-if [ $error_alert -ne 0 ]
-then
-        SendAlert
-        LogError "Zsnap script finished with errors."
-else
-	if [ "$DEBUG" == "yes" ]
-	then
-        	Log "Zsnap script finshed."
-	fi
 fi
