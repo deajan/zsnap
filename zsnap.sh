@@ -3,7 +3,7 @@
 ###### ZFS snapshot management script - Samba vfs_object previous versions friendly
 ###### (L) 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
 
-ZSNAP_VERSION=0.8 #### Build 2007201301
+ZSNAP_VERSION=0.8 #### Build 2408201301
 
 ## Default log file if configuration file is not loaded
 LOG_FILE=/var/log/zsnap.log
@@ -249,7 +249,6 @@ function UnmountSnaps
                 if [ $? != 0 ]
                 then
                         LogError "UnmountSnaps: Cannot unmount $mountpoint"
-                        return 1
                 elif [ $verbose -eq 1 ]
 		then
                         Log "UnmountSnaps: $mountpoint unmounted"
@@ -259,7 +258,6 @@ function UnmountSnaps
                 if [ $? != 0 ]
                 then
                         LogError "UnmountSnaps: Cannot delete mountpoint $mountpoint"
-                        return 1
                 elif [ $verbose -eq 1 ]
 		then
                         Log "UnmountSnaps: Mountpoint $mountpoint deleted"
@@ -355,7 +353,7 @@ function Usage
 	echo "Zsnap $ZSNAP_VERSION written in 2010-2013 by Orsiris "Ozy" de Jong | ozy@netpower.fr"
 	echo "Manages snapshot of a given dataset and mounts them as subdirectories of dataset."
 	echo ""
-        echo "Usage: zsnap /path/to/snapshot.conf [status|createsimple|create|destroyoldest|destroyall|destroy zvolume@YYYY.MM.DD-HH.MM.SS|mount|umount]"
+        echo "Usage: zsnap /path/to/snapshot.conf [status|createsimple|create|destroyoldest|destroyall|destroy zvolume@YYYY.MM.DD-HH.MM.SS|mount|umount] [--silent] [--verbose]"
 	echo
         echo "status - List status info"
         echo "createsimple - Will create a snapshot and mount it without any prior checks."
@@ -365,6 +363,9 @@ function Usage
 	echo "destroy yourdataset@YYYY.MM.DD-HH.MM.SS - Will destroy a given snapshot."
 	echo "mount - Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
 	echo "umount - Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
+	echo
+	echo "--silent - Will run Zsnap without any output to stdout. Usefull for cron tasks."
+	echo "--verbose - Will add function output."
 	exit 128
 }
 

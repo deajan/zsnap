@@ -1,3 +1,4 @@
+- Fixed batch unmount stopped on erroro
 - Added --silent and --verbose parameters
 - Fixed various minor glitches
 - Added option to disable UTC time format use
