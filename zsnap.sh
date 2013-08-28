@@ -1,9 +1,9 @@
 #!/bin/bash
 
-###### ZFS snapshot management script - Samba vfs_object previous versions friendly
-###### (L) 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
+###### ZFS snapshot management script - Samba vfs objects shadow_copy or shadow_copy2 previous versions friendly
+###### Written in 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
 
-ZSNAP_VERSION=0.8 #### Build 2408201301
+ZSNAP_VERSION=0.9 #### Build 2808201301
 
 ## Default log file if configuration file is not loaded
 LOG_FILE=/var/log/zsnap.log
@@ -145,17 +145,20 @@ function CountSnaps
 # Destroys a snapshot given as argument
 function DestroySnap
 {
-	mountpoint=$(mount | grep $1 | cut -d' ' -f3)
-	if [ "$mountpoint" != "" ]
-	then
-		umount $mountpoint
-		if [ $? != 0 ]
+        if [ "$USE_SHADOW_COPY2" == "no" ]
+        then
+		mountpoint=$(mount | grep $1 | cut -d' ' -f3)
+		if [ "$mountpoint" != "" ]
 		then
-			LogError "DestroySnap: Cannot unmount snapshot $1 from $mountpoint"
-			return 1
-		elif [ $verbose -eq 1 ]
-		then
-			Log "DestroySnap: Snapshot $1 unmounted from $mountpoint"
+			umount $mountpoint
+			if [ $? != 0 ]
+			then
+				LogError "DestroySnap: Cannot unmount snapshot $1 from $mountpoint"
+				return 1
+			elif [ $verbose -eq 1 ]
+			then
+				Log "DestroySnap: Snapshot $1 unmounted from $mountpoint"
+			fi
 		fi
 	fi
 
@@ -268,7 +271,10 @@ function UnmountSnaps
 # Creates a new snapshot. Unmounts snapshots before creation and remounts them afterwards so snapshot mountpoints won't be snapshotted
 function CreateSnap
 {
-	UnmountSnaps
+	if [ "$USE_SHADOW_COPY2" == "no" ]
+	then
+		UnmountSnaps
+	fi
 	if [ "$USE_UTC" != "no" ]
 	then
 		SNAP_TIME=$(date -u +%Y.%m.%d-%H.%M.%S)
@@ -282,12 +288,16 @@ function CreateSnap
 		return 1
 	fi
 	Log "CreateSnap: Snapshot $ZFS_VOLUME@$SNAP_TIME created"
-	MountSnaps
+        if [ "$USE_SHADOW_COPY2" == "no" ]
+        then
+		MountSnaps
+	fi
 }
 
 # Does the same as CreateSnap, but verifies enforcing parameters first
 function VerifyParamsAndCreateSnap
 {
+	max_space_reached=0
 	GetZvolUsage
 	CountSnaps
 	if [ $verbose -eq 1 ]
@@ -306,11 +316,17 @@ function VerifyParamsAndCreateSnap
 		DestroySnaps
 		GetZvolUsage
 		CountSnaps
+		max_space_reached=1
 	done
 
 	if [ $verbose -eq 1 ]
 	then
 		Log "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
+	fi
+
+	if [ $max_space_reached -eq 1 ]
+	then
+		LogError "Warning: $MAX_SPACE disk usage was reached."
 	fi
 
 	CreateSnap
@@ -361,8 +377,8 @@ function Usage
 	echo "destroyoldest - Will destroy the oldest snapshot of the dataset."
 	echo "destroyall - Will destroy all snapshots of the dataset."
 	echo "destroy yourdataset@YYYY.MM.DD-HH.MM.SS - Will destroy a given snapshot."
-	echo "mount - Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
-	echo "umount - Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
+	echo "mount - (does not apply to shadow_copy2 use) Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
+	echo "umount - (does not apply to shadow_copy2 use) Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
 	echo
 	echo "--silent - Will run Zsnap without any output to stdout. Usefull for cron tasks."
 	echo "--verbose - Will add function output."
