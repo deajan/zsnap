@@ -3,7 +3,7 @@
 ###### ZFS snapshot management script - Samba vfs objects shadow_copy or shadow_copy2 previous versions friendly
 ###### Written in 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
 
-ZSNAP_VERSION=0.9 #### Build 2808201301
+ZSNAP_VERSION=0.9 #### Build 0309201301
 
 ## Default log file if configuration file is not loaded
 LOG_FILE=/var/log/zsnap.log
@@ -130,12 +130,12 @@ function CheckEnvironment
 # Count number of snapshots of $ZFS_VOLUME
 function CountSnaps
 {
-	SNAP_COUNT=$($(which zfs) list -t snapshot -H | grep "$ZFS_VOLUME@" | wc -l)
+	SNAP_COUNT=$($(which zfs) list -t snapshot -H | grep "^$ZFS_VOLUME@" | wc -l)
 	if [ $? != 0 ]
 	then
-		LogError "CountSnaps: Cannot count snapshots of volume $ZFS_VOLUME"
-		return 1
-	elif [ $verbose -eq 1 ]
+		SNAP_COUNT=0
+	fi
+	if [ $verbose -ne 0 ]
 	then
 		Log "CountSnaps: There are $SNAP_COUNT snapshots in $ZFS_VOLUME"
 		return 0
@@ -145,7 +145,7 @@ function CountSnaps
 # Destroys a snapshot given as argument
 function DestroySnap
 {
-        if [ "$USE_SHADOW_COPY2" == "no" ]
+        if [ "$USE_SHADOW_COPY2" != "yes" ]
         then
 		mountpoint=$(mount | grep $1 | cut -d' ' -f3)
 		if [ "$mountpoint" != "" ]
@@ -155,7 +155,7 @@ function DestroySnap
 			then
 				LogError "DestroySnap: Cannot unmount snapshot $1 from $mountpoint"
 				return 1
-			elif [ $verbose -eq 1 ]
+			elif [ $verbose -ne 0 ]
 			then
 				Log "DestroySnap: Snapshot $1 unmounted from $mountpoint"
 			fi
@@ -178,7 +178,7 @@ function DestroySnap
 		then
 			LogError "DestroySnap: Cannot delete mountpoint $mountpoint"
 			return 1
-		elif [ $verbose -eq 1 ]
+		elif [ $verbose -ne 0 ]
 		then
 			Log "DestroySnap: Mountpoint $mountpoint deleted"
 		fi
@@ -188,7 +188,7 @@ function DestroySnap
 # Destroys oldest snapshot, or destroys all snapshots in volume if argumennt "all" is given
 function DestroySnaps
 {
-	for snap in $($(which zfs) list -t snapshot -H | grep "$ZFS_VOLUME@" | cut -f1)
+	for snap in $($(which zfs) list -t snapshot -H | grep "^$ZFS_VOLUME@" | cut -f1)
 	do
 		DestroySnap $snap
 		if [ "$1" != "all" ]
@@ -206,7 +206,7 @@ function GetZvolUsage
 	then
 		LogError "GetZvolUsage: Cannot get disk usage of pool $ZFS_POOL"
 		return 1
-	elif [ $verbose -eq 1 ]
+	elif [ $verbose -ne 0 ]
 	then
 		Log "GetZvolUsage: Disk usage of $ZFS_POOL = $USED_SPACE %"
 	fi
@@ -216,7 +216,7 @@ function GetZvolUsage
 function MountSnaps
 {
 	zvol_mountpoint=$($(which zfs) get mountpoint $ZFS_VOLUME -H | cut -f3)
-	for snap in $($(which zfs) list -t snapshot -H | grep "$ZFS_VOLUME@" | cut -f1)
+	for snap in $($(which zfs) list -t snapshot -H | grep "^$ZFS_VOLUME@" | cut -f1)
 	do
 		snap_mountpoint=$(echo $snap | cut -d'@' -f2)
 		if [ $(mount | grep $snap_mountpoint | wc -l) -eq 0 ]
@@ -226,7 +226,7 @@ function MountSnaps
 			then
 				LogError "MountSnaps: Cannot create mountpoint directory $zvol_mountpoint/$snap_mountpoint"
 				return 1
-			elif [ $verbose -eq 1 ]
+			elif [ $verbose -ne 0 ]
 			then
 				Log "MountSnaps: Created mountpoint directory $zvol_mountpount/@GMT-$snap_mountpoint"
 			fi
@@ -235,7 +235,7 @@ function MountSnaps
 			then
 				LogError "MountSnaps: Cannot mount $snap on $zvol_mountpoint/@GMT-$snap_mountpoint"
 				return 1
-			elif [ $verbose -eq 1 ]
+			elif [ $verbose -ne 0 ]
 			then
 				Log "MountSnaps: Snapshot $snap mounted on $zvol_mountpoint/@GMT-$snap_mountpoint"
 			fi
@@ -246,13 +246,13 @@ function MountSnaps
 # Unmounts all snapshots and deletes its mountpoint directories
 function UnmountSnaps
 {
-        for mountpoint in $(mount | grep "$ZFS_VOLUME@" | cut -d' ' -f3)
+        for mountpoint in $(mount | grep "^$ZFS_VOLUME@" | cut -d' ' -f3)
         do
                 umount $mountpoint
                 if [ $? != 0 ]
                 then
                         LogError "UnmountSnaps: Cannot unmount $mountpoint"
-                elif [ $verbose -eq 1 ]
+                elif [ $verbose -ne 0 ]
 		then
                         Log "UnmountSnaps: $mountpoint unmounted"
                 fi
@@ -261,7 +261,7 @@ function UnmountSnaps
                 if [ $? != 0 ]
                 then
                         LogError "UnmountSnaps: Cannot delete mountpoint $mountpoint"
-                elif [ $verbose -eq 1 ]
+                elif [ $verbose -ne 0 ]
 		then
                         Log "UnmountSnaps: Mountpoint $mountpoint deleted"
                 fi
@@ -300,7 +300,7 @@ function VerifyParamsAndCreateSnap
 	max_space_reached=0
 	GetZvolUsage
 	CountSnaps
-	if [ $verbose -eq 1 ]
+	if [ $verbose -ne 0 ]
 	then
 		Log "There are currently $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
 	fi
@@ -319,7 +319,7 @@ function VerifyParamsAndCreateSnap
 		max_space_reached=1
 	done
 
-	if [ $verbose -eq 1 ]
+	if [ $verbose -ne 0 ]
 	then
 		Log "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
 	fi
@@ -340,12 +340,15 @@ function Status
 	CountSnaps
 	echo "Number of snapshots (min < actual < max): $MIN_SNAPSHOTS < $SNAP_COUNT < $MAX_SNAPSHOTS"
 	echo "Disk usage: $ZFS_POOL: $USED_SPACE %"
-	echo ""
-	echo "Snapshot list"
-	for snap in $($(which zfs) list -t snapshot -H | grep "$ZFS_VOLUME@" | cut -f1)
-	do
-		echo "$snap"
-	done
+	if [ $verbose -ne 0 ]
+	then
+		echo ""
+		echo "Snapshot list"
+		for snap in $($(which zfs) list -t snapshot -H | grep "^$ZFS_VOLUME@" | cut -f1)
+		do
+			echo "$snap"
+		done
+	fi
 }
 
 function Init
