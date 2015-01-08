@@ -1,9 +1,9 @@
 #!/bin/bash
 
 ###### ZFS snapshot management script - Samba vfs objects shadow_copy or shadow_copy2 previous versions friendly
-###### Written in 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
+###### Written in 2010-2015 by Orsiris "Ozy" de Jong (www.netpower.fr)
 
-ZSNAP_VERSION=0.9 #### Build 0309201301
+ZSNAP_VERSION=0.91 #### Build 0801201501
 
 ## Default log file if configuration file is not loaded
 LOG_FILE=/var/log/zsnap.log
@@ -202,6 +202,12 @@ function DestroySnaps
 function GetZvolUsage
 {
 	USED_SPACE=$($(which zpool) list -H | grep $ZFS_POOL | cut -f5 | cut -d'%' -f1)
+	## Added support for new zfsonlinux 0.6.4 zpool output
+	if [ "$USED_SPACE" == "-" ]
+	then
+		USED_SPACE=$($(which zpool) list -H | grep $ZFS_POOL | cut -f7 | cut -d'%' -f1)
+	fi
+
 	if [ $? != 0 ]
 	then
 		LogError "GetZvolUsage: Cannot get disk usage of pool $ZFS_POOL"
