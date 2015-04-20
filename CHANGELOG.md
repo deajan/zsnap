@@ -1,5 +1,6 @@
 ## RECENT CHANGES
 
+- Added destroy XX snapshots command
 - Added support for zfsonlinux 0.6.4 zpool output being different
 - Removed unnecessary warning in CountSnaps if there aren't any snaps
 - Added leading ^ in grep arguments as disambigution in the highly unlikely case you have dataset names containing other dataset names

@@ -1,12 +1,17 @@
 #!/bin/bash
 
 ###### ZFS snapshot management script - Samba vfs objects shadow_copy or shadow_copy2 previous versions friendly
-###### Written in 2010-2015 by Orsiris "Ozy" de Jong (www.netpower.fr)
+###### Written in 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
 
-ZSNAP_VERSION=0.91 #### Build 0801201501
+ZSNAP_VERSION=0.9.1 #### Build 2004201501
 
-## Default log file if configuration file is not loaded
-LOG_FILE=/var/log/zsnap.log
+if [ -w /var/log ]
+then
+	LOG_FILE=/var/log/zsnap.log
+else
+	LOG_FILE=./zsnap.log
+fi
+
 DEBUG=no
 SCRIPT_PID=$$
 
@@ -188,10 +193,19 @@ function DestroySnap
 # Destroys oldest snapshot, or destroys all snapshots in volume if argumennt "all" is given
 function DestroySnaps
 {
+	arg="$1"
+	destroycount=0
 	for snap in $($(which zfs) list -t snapshot -H | grep "^$ZFS_VOLUME@" | cut -f1)
 	do
 		DestroySnap $snap
-		if [ "$1" != "all" ]
+		destroycount=$(($destroycount + 1))
+		if [ "$arg" == "" ]
+		then
+			break;
+		elif [ "$arg" == "all" ]
+		then
+			break;
+		elif [ $destroycount -ge "$arg" ]
 		then
 			break;
 		fi
@@ -386,6 +400,7 @@ function Usage
 	echo "destroyoldest - Will destroy the oldest snapshot of the dataset."
 	echo "destroyall - Will destroy all snapshots of the dataset."
 	echo "destroy yourdataset@YYYY.MM.DD-HH.MM.SS - Will destroy a given snapshot."
+	echo "destroy XX - Will destroy XX oldest snapshots."
 	echo "mount - (does not apply to shadow_copy2 use) Mounts all snapshots. Mounting is automatic, this is only needed in case of a recovery."
 	echo "umount - (does not apply to shadow_copy2 use) Unmounts all snapshots. Unmounting is automatic, this is only needed in case of a recovery."
 	echo
@@ -449,7 +464,12 @@ then
 				destroy)
 				if [ "$3" != "" ]
 				then
-					DestroySnap "$3"
+					if [[ "$3" == *"@"* ]]
+					then
+						DestroySnap "$3"
+					else
+						DestroySnaps "$3"
+					fi
 				else
 					Usage
 				fi
