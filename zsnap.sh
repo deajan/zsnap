@@ -1,134 +1,315 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 ###### ZFS snapshot management script - Samba vfs objects shadow_copy or shadow_copy2 previous versions friendly
-###### Written in 2010-2013 by Orsiris "Ozy" de Jong (www.netpower.fr)
+PROGRAM="zsnap"
+AUTHOR="(L) 2010-2016 by Orsiris de Jong"
+CONTACT="http://www.netpower.fr/zsanp - ozy@netpower.fr"
+PROGRAM_VERSION=0.9.4
+PROGRAM_BUILD=2016031401
 
-ZSNAP_VERSION=0.9.1 #### Build 2004201501
+MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
-if [ -w /var/log ]
-then
-	LOG_FILE=/var/log/zsnap.log
+#### MINIMAL-FUNCTION-SET BEGIN ####
+
+# Environment variables
+_DRYRUN=0
+_SILENT=0
+
+# Initial error status, logging 'WARN', 'ERROR' or 'CRITICAL' will enable alerts flags
+ERROR_ALERT=0
+WARN_ALERT=0
+
+
+## allow debugging from command line with _DEBUG=yes
+if [ ! "$_DEBUG" == "yes" ]; then
+	_DEBUG=no
+	SLEEP_TIME=.1
+	_VERBOSE=0
 else
-	LOG_FILE=./zsnap.log
+	SLEEP_TIME=1
+	trap 'TrapError ${LINENO} $?' ERR
+	_VERBOSE=1
 fi
 
-DEBUG=no
 SCRIPT_PID=$$
-
 
 LOCAL_USER=$(whoami)
 LOCAL_HOST=$(hostname)
 
-MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
+## Default log file until config file is loaded
+if [ -w /var/log ]; then
+	LOG_FILE="/var/log/$PROGRAM.log"
+else
+	LOG_FILE="./$PROGRAM.log"
+fi
 
-function Log
-{
-        # Writes a standard log file including normal operation
-        DATE=$(date)
-        echo "$DATE - $1" >> $LOG_FILE
-        if [ $silent -ne 1 ]
-        then
-                echo "$1"
-        fi
+## Default directory where to store temporary run files
+if [ -w /tmp ]; then
+	RUN_DIR=/tmp
+elif [ -w /var/tmp ]; then
+	RUN_DIR=/var/tmp
+else
+	RUN_DIR=.
+fi
+
+
+# Default alert attachment filename
+ALERT_LOG_FILE="$RUN_DIR/$PROGRAM.last.log"
+
+# Set error exit code if a piped command fails
+	set -o pipefail
+	set -o errtrace
+
+
+function Dummy {
+	sleep .1
 }
 
-function LogError
-{
-	Log "$1"
-	error_alert=1
+function _Logger {
+	local svalue="${1}" # What to log to screen
+	local lvalue="${2:-$svalue}" # What to log to logfile, defaults to screen value
+	echo -e "$lvalue" >> "$LOG_FILE"
+
+	if [ $_SILENT -eq 0 ]; then
+		echo -e "$svalue"
+	fi
 }
 
-function TrapError
-{
-        local JOB="$0"
-        local LINE="$1"
-        local CODE="${2:-1}"
-        echo "Error in ${JOB}: Near line ${LINE}, exit code ${CODE}"
+function Logger {
+	local value="${1}" # Sentence to log (in double quotes)
+	local level="${2}" # Log level: PARANOIA_DEBUG, DEBUG, NOTICE, WARN, ERROR, CRITIAL
+
+	# <OSYNC SPECIFIC> Special case in daemon mode we should timestamp instead of counting seconds
+	if [ "$sync_on_changes" == "1" ]; then
+		prefix="$(date) - "
+	else
+		prefix="TIME: $SECONDS - "
+	fi
+	# </OSYNC SPECIFIC>
+
+	if [ "$level" == "CRITICAL" ]; then
+		_Logger "$prefix\e[41m$value\e[0m" "$prefix$level:$value"
+		ERROR_ALERT=1
+		return
+	elif [ "$level" == "ERROR" ]; then
+		_Logger "$prefix\e[91m$value\e[0m" "$prefix$level:$value"
+		ERROR_ALERT=1
+		return
+	elif [ "$level" == "WARN" ]; then
+		_Logger "$prefix\e[93m$value\e[0m" "$prefix$level:$value"
+		WARN_ALERT=1
+		return
+	elif [ "$level" == "NOTICE" ]; then
+		_Logger "$prefix$value"
+		return
+	elif [ "$level" == "DEBUG" ]; then
+		if [ "$_DEBUG" == "yes" ]; then
+			_Logger "$prefix$value"
+			return
+		fi
+	else
+		_Logger "\e[41mLogger function called without proper loglevel.\e[0m"
+		_Logger "$prefix$value"
+	fi
 }
+
+# Portable child (and grandchild) kill function tester under Linux, BSD and MacOS X
+function KillChilds {
+	local pid="${1}"
+	local self="${2:-false}"
+
+	if children="$(pgrep -P "$pid")"; then
+		for child in $children; do
+			KillChilds "$child" true
+		done
+	fi
+
+	# Try to kill nicely, if not, wait 30 seconds to let Trap actions happen before killing
+	if [ "$self" == true ]; then
+		kill -s SIGTERM "$pid" || (sleep 30 && kill -9 "$pid" &)
+	fi
+	# sleep 30 needs to wait before killing itself
+}
+
+function SendAlert {
+
+	local mail_no_attachment=
+	local attachment_command=
+
+	if [ "$DESTINATION_MAILS" == "" ]; then
+		return 0
+	fi
+
+	if [ "$_DEBUG" == "yes" ]; then
+		Logger "Debug mode, no warning email will be sent." "NOTICE"
+		return 0
+	fi
+
+	# <OSYNC SPECIFIC>
+	if [ "$_QUICK_SYNC" == "2" ]; then
+		Logger "Current task is a quicksync task. Will not send any alert." "NOTICE"
+		return 0
+	fi
+	# </OSYNC SPECIFIC>
+
+	eval "cat \"$LOG_FILE\" $COMPRESSION_PROGRAM > $ALERT_LOG_FILE"
+	if [ $? != 0 ]; then
+		Logger "Cannot create [$ALERT_LOG_FILE]" "WARN"
+		mail_no_attachment=1
+	else
+		mail_no_attachment=0
+	fi
+	MAIL_ALERT_MSG="$MAIL_ALERT_MSG"$'\n\n'$(tail -n 50 "$LOG_FILE")
+	if [ $ERROR_ALERT -eq 1 ]; then
+		subject="Error alert for $INSTANCE_ID"
+	elif [ $WARN_ALERT -eq 1 ]; then
+		subject="Warning alert for $INSTANCE_ID"
+	else
+		subject="Alert for $INSTANCE_ID"
+	fi
+
+	if [ "$mail_no_attachment" -eq 0 ]; then
+		attachment_command="-a $ALERT_LOG_FILE"
+	fi
+	if type mutt > /dev/null 2>&1 ; then
+		cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mutt) -x -s \"$subject\" $DESTINATION_MAILS $attachment_command"
+		Logger "Mail cmd: $cmd" "DEBUG"
+		eval $cmd
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p mutt) !!!" "WARN"
+		else
+			Logger "Sent alert mail using mutt." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type mail > /dev/null 2>&1 ; then
+		if [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V | grep "GNU" > /dev/null; then
+			attachment_command="-A $ALERT_LOG_FILE"
+		elif [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V > /dev/null; then
+			attachment_command="-a $ALERT_LOG_FILE"
+		else
+			attachment_command=""
+		fi
+		cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mail) $attachment_command -s \"$subject\" $DESTINATION_MAILS"
+		Logger "Mail cmd: $cmd" "DEBUG"
+		eval $cmd
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p mail) with attachments !!!" "WARN"
+			cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mail) -s \"$subject\" $DESTINATION_MAILS"
+			Logger "Mail cmd: $cmd" "DEBUG"
+			eval $cmd
+			if [ $? != 0 ]; then
+				Logger "Cannot send alert email via $(type -p mail) without attachments !!!" "WARN"
+			else
+				Logger "Sent alert mail using mail command without attachment." "NOTICE"
+				return 0
+			fi
+		else
+			Logger "Sent alert mail using mail command." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type sendmail > /dev/null 2>&1 ; then
+		cmd="echo -e \"Subject:$subject\r\n$MAIL_ALERT_MSG\" | $(type -p sendmail) $DESTINATION_MAILS"
+		Logger "Mail cmd: $cmd" "DEBUG"
+		eval $cmd
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p sendmail) !!!" "WARN"
+		else
+			Logger "Sent alert mail using sendmail command without attachment." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type sendemail > /dev/null 2>&1 ; then
+		if [ "$SMTP_USER" != "" ] && [ "$SMTP_PASSWORD" != "" ]; then
+			SMTP_OPTIONS="-xu $SMTP_USER -xp $SMTP_PASSWORD"
+		else
+			SMTP_OPTIONS=""
+		fi
+		$(type -p sendemail) -f $SENDER_MAIL -t $DESTINATION_MAILS -u "$subject" -m "$MAIL_ALERT_MSG" -s $SMTP_SERVER $SMTP_OPTIONS > /dev/null 2>&1
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p sendemail) !!!" "WARN"
+		else
+			Logger "Sent alert mail using sendemail command without attachment." "NOTICE"
+			return 0
+		fi
+	fi
+
+	# If function has not returned 0 yet, assume it's critical that no alert can be sent
+	Logger "Cannot send alert (neither mutt, mail, sendmail nor sendemail found)." "ERROR" # Is not marked critical because execution must continue
+
+	# Delete tmp log file
+	if [ -f "$ALERT_LOG_FILE" ]; then
+		rm "$ALERT_LOG_FILE"
+	fi
+}
+
+function TrapError {
+	local job="$0"
+	local line="$1"
+	local code="${2:-1}"
+	if [ $_SILENT -eq 0 ]; then
+		echo -e " /!\ ERROR in ${job}: Near line ${line}, exit code ${code}"
+	fi
+}
+
+function LoadConfigFile {
+	local config_file="${1}"
+
+
+	if [ ! -f "$config_file" ]; then
+		Logger "Cannot load configuration file [$config_file]. Cannot start." "CRITICAL"
+		exit 1
+	elif [[ "$1" != *".conf" ]]; then
+		Logger "Wrong configuration file supplied [$config_file]. Cannot start." "CRITICAL"
+		exit 1
+	else
+		grep '^[^ ]*=[^;&]*' "$config_file" > "$RUN_DIR/$PROGRAM.${FUNCNAME[0]}.$SCRIPT_PID" # WITHOUT COMMENTS
+		# Shellcheck source=./sync.conf
+		source "$RUN_DIR/$PROGRAM.${FUNCNAME[0]}.$SCRIPT_PID"
+	fi
+
+	CONFIG_FILE="$config_file"
+}
+
+#### MINIMAL-FUNCTION-SET END ####
+
 
 function TrapStop
 {
-        LogError " /!\ WARNING: Manual exit of zsnap script. zfs snapshots may not be mounted."
-        exit 1
+	Logger "/!\ Manual exit of zsnap script. zfs snapshots may not be mounted." "WARN"
+	exit 1
 }
 
 function TrapQuit
 {
-	if [ $error_alert -ne 0 ]
+	if [ $ERROR_ALERT -ne 0 ]
 	then
-        	SendAlert
-        	LogError "Zsnap script finished with errors."
+		SendAlert
+		Logger "Zsnap script finished with errors." "ERROR"
 	else
-        	if [ "$DEBUG" == "yes" ]
-        	then
-                	Log "Zsnap script finshed."
-        	fi
+		if [ "$_DEBUG" == "yes" ]
+		then
+			Logger "Zsnap script finshed." "NOTICE"
+		fi
 	fi
-}
-
-
-function SendAlert
-{
-        cat $LOG_FILE | gzip -9 > /tmp/zsnap_lastlog.gz
-        if type -p mutt > /dev/null 2>&1
-        then
-                echo $MAIL_ALERT_MSG | $(which mutt) -x -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAILS -a /tmp/zsnap_lastlog.gz
-                if [ $? != 0 ]
-                then
-                        Log "WARNING: Cannot send alert email via $(which mutt) !!!"
-                else
-                        Log "Sent alert mail using mutt."
-                fi
-        elif type -p mail > /dev/null 2>&1
-        then
-                echo $MAIL_ALERT_MSG | $(which mail) -a /tmp/zsnap_lastlog.gz -s "Zsnap script alert for $ZFS_VOLUME" $DESTINATION_MAILS
-                if [ $? != 0 ]
-                then
-                        Log "WARNING: Cannot send alert email via $(which mail) with attachments !!!"
-                        echo $MAIL_ALERT_MSG | $(which mail) -s "Zsnap script alert for $ZFS_VOLMUE" $DESTINATION_MAILS
-                        if [ $? != 0 ]
-                        then
-                                Log "WARNING: Cannot send alert email via $(which mail) without attachments !!!"
-                        else
-                                Log "Sent alert mail using mail command without attachment."
-                        fi
-                else
-                        Log "Sent alert mail using mail command."
-                fi
-        else
-                Log "WARNING: Cannot send alert email (no mutt / mail present) !!!"
-                return 1
-        fi
-}
-
-function LoadConfigFile
-{
-        if [ ! -f "$1" ]
-        then
-                LogError "Cannot load zsnap configuration file [$1]. Zsnap script cannot work."
-                return 1
-        elif [[ $1 != *.conf ]]
-        then
-                LogError "Wrong configuration file supplied [$1]. Zsnap cannot work."
-		return 1
-        else
-                egrep '^#|^[^ ]*=[^;&]*'  "$1" > "/dev/shm/zsnap_config_$SCRIPT_PID"
-                source "/dev/shm/zsnap_config_$SCRIPT_PID"
-        fi
 }
 
 function CheckEnvironment
 {
 	if ! type -p zfs > /dev/null 2>&1
 	then
-		LogError "zfs not present. zsnap cannot work."
-		return 1
+		Logger "zfs not present. zsnap cannot work." "CRITICAL"
+		exit 1
 	fi
 
 	if ! type -p zpool > /dev/null 2>&1
 	then
-		LogError "zpool not present. zsnap cannot work."
-		return 1
+		Logger "zpool not present. zsnap cannot work." "CRITICAL"
+		exit 1
 	fi
 }
 
@@ -140,9 +321,9 @@ function CountSnaps
 	then
 		SNAP_COUNT=0
 	fi
-	if [ $verbose -ne 0 ]
+	if [ "$_VERBOSE" -ne 0 ]
 	then
-		Log "CountSnaps: There are $SNAP_COUNT snapshots in $ZFS_VOLUME"
+		Logger "CountSnaps: There are $SNAP_COUNT snapshots in $ZFS_VOLUME" "NOTICE"
 		return 0
 	fi
 }
@@ -150,19 +331,19 @@ function CountSnaps
 # Destroys a snapshot given as argument
 function DestroySnap
 {
-        if [ "$USE_SHADOW_COPY2" != "yes" ]
-        then
+	if [ "$USE_SHADOW_COPY2" != "yes" ]
+	then
 		mountpoint=$(mount | grep $1 | cut -d' ' -f3)
 		if [ "$mountpoint" != "" ]
 		then
-			umount $mountpoint
+			umount "$mountpoint"
 			if [ $? != 0 ]
 			then
-				LogError "DestroySnap: Cannot unmount snapshot $1 from $mountpoint"
+				Logger "DestroySnap: Cannot unmount snapshot $1 from $mountpoint" "ERROR"
 				return 1
-			elif [ $verbose -ne 0 ]
+			elif [ "$_VERBOSE" -ne 0 ]
 			then
-				Log "DestroySnap: Snapshot $1 unmounted from $mountpoint"
+				Logger "DestroySnap: Snapshot $1 unmounted from $mountpoint" "NOTICE"
 			fi
 		fi
 	fi
@@ -170,10 +351,10 @@ function DestroySnap
 	$(which zfs) destroy $1
 	if [ $? != 0 ]
 	then
-		LogError "DestroySnap: Cannot destroy snapshot $1"
+		Logger "DestroySnap: Cannot destroy snapshot $1" "ERROR"
 		return 1
 	else
-	Log "DestroySnap: Snapshot $1 destroyed"
+	Logger "DestroySnap: Snapshot $1 destroyed" "NOTICE"
 	fi
 
 	if [ -d $mountpoint ] && [ "$mountpoint" != "" ]
@@ -181,11 +362,11 @@ function DestroySnap
 		rm -r $mountpoint
 		if [ $? != 0 ]
 		then
-			LogError "DestroySnap: Cannot delete mountpoint $mountpoint"
+			Logger "DestroySnap: Cannot delete mountpoint $mountpoint" "ERROR"
 			return 1
-		elif [ $verbose -ne 0 ]
+		elif [ "$_VERBOSE" -ne 0 ]
 		then
-			Log "DestroySnap: Mountpoint $mountpoint deleted"
+			Logger "DestroySnap: Mountpoint $mountpoint deleted" "NOTICE"
 		fi
 	fi
 }
@@ -224,11 +405,11 @@ function GetZvolUsage
 
 	if [ $? != 0 ]
 	then
-		LogError "GetZvolUsage: Cannot get disk usage of pool $ZFS_POOL"
+		Logger "GetZvolUsage: Cannot get disk usage of pool $ZFS_POOL" "ERROR"
 		return 1
-	elif [ $verbose -ne 0 ]
+	elif [ "$_VERBOSE" -ne 0 ]
 	then
-		Log "GetZvolUsage: Disk usage of $ZFS_POOL = $USED_SPACE %"
+		Logger "GetZvolUsage: Disk usage of $ZFS_POOL = $USED_SPACE %" "NOTICE"
 	fi
 }
 
@@ -239,25 +420,25 @@ function MountSnaps
 	for snap in $($(which zfs) list -t snapshot -H | grep "^$ZFS_VOLUME@" | cut -f1)
 	do
 		snap_mountpoint=$(echo $snap | cut -d'@' -f2)
-		if [ $(mount | grep $snap_mountpoint | wc -l) -eq 0 ]
+		if [ "$(mount | grep $snap_mountpoint | wc -l)" -eq 0 ]
 		then
 			mkdir -p $zvol_mountpoint/@GMT-$snap_mountpoint
 			if [ $? != 0 ]
 			then
-				LogError "MountSnaps: Cannot create mountpoint directory $zvol_mountpoint/$snap_mountpoint"
+				Logger "MountSnaps: Cannot create mountpoint directory $zvol_mountpoint/$snap_mountpoint" "ERROR"
 				return 1
-			elif [ $verbose -ne 0 ]
+			elif [ "$_VERBOSE" -ne 0 ]
 			then
-				Log "MountSnaps: Created mountpoint directory $zvol_mountpount/@GMT-$snap_mountpoint"
+				Logger "MountSnaps: Created mountpoint directory $zvol_mountpoint/@GMT-$snap_mountpoint" "NOTICE"
 			fi
 			mount -t zfs $snap $zvol_mountpoint/@GMT-$snap_mountpoint
 			if [ $? != 0 ]
 			then
-				LogError "MountSnaps: Cannot mount $snap on $zvol_mountpoint/@GMT-$snap_mountpoint"
+				Logger "MountSnaps: Cannot mount $snap on $zvol_mountpoint/@GMT-$snap_mountpoint" "ERROR"
 				return 1
-			elif [ $verbose -ne 0 ]
+			elif [ "$_VERBOSE" -ne 0 ]
 			then
-				Log "MountSnaps: Snapshot $snap mounted on $zvol_mountpoint/@GMT-$snap_mountpoint"
+				Logger "MountSnaps: Snapshot $snap mounted on $zvol_mountpoint/@GMT-$snap_mountpoint" "NOTICE"
 			fi
 		fi
 	done
@@ -266,26 +447,26 @@ function MountSnaps
 # Unmounts all snapshots and deletes its mountpoint directories
 function UnmountSnaps
 {
-        for mountpoint in $(mount | grep "^$ZFS_VOLUME@" | cut -d' ' -f3)
-        do
-                umount $mountpoint
-                if [ $? != 0 ]
-                then
-                        LogError "UnmountSnaps: Cannot unmount $mountpoint"
-                elif [ $verbose -ne 0 ]
+	for mountpoint in $(mount | grep "^$ZFS_VOLUME@" | cut -d' ' -f3)
+	do
+		umount "$mountpoint"
+		if [ $? != 0 ]
 		then
-                        Log "UnmountSnaps: $mountpoint unmounted"
-                fi
+			Logger "UnmountSnaps: Cannot unmount $mountpoint" "ERROR"
+		elif [ "$_VERBOSE" -ne 0 ]
+		then
+			Logger "UnmountSnaps: $mountpoint unmounted" "NOTICE"
+		fi
 
-                rm -r $mountpoint
-                if [ $? != 0 ]
-                then
-                        LogError "UnmountSnaps: Cannot delete mountpoint $mountpoint"
-                elif [ $verbose -ne 0 ]
+		rm -r "$mountpoint"
+		if [ $? != 0 ]
 		then
-                        Log "UnmountSnaps: Mountpoint $mountpoint deleted"
-                fi
-        done
+			Logger "UnmountSnaps: Cannot delete mountpoint $mountpoint" "ERROR"
+		elif [ "$_VERBOSE" -ne 0 ]
+		then
+			Logger "UnmountSnaps: Mountpoint $mountpoint deleted" "NOTICE"
+		fi
+	done
 }
 
 # Creates a new snapshot. Unmounts snapshots before creation and remounts them afterwards so snapshot mountpoints won't be snapshotted
@@ -304,12 +485,12 @@ function CreateSnap
 	$(which zfs) snapshot $ZFS_VOLUME@$SNAP_TIME
 	if [ $? != 0 ]
 	then
-		LogError "CreateSnap: Cannot create snapshot $ZFS_VOLUME@$SNAP_TIME"
+		Logger "CreateSnap: Cannot create snapshot $ZFS_VOLUME@$SNAP_TIME" "ERROR"
 		return 1
 	fi
 	Log "CreateSnap: Snapshot $ZFS_VOLUME@$SNAP_TIME created"
-        if [ "$USE_SHADOW_COPY2" == "no" ]
-        then
+	if [ "$USE_SHADOW_COPY2" == "no" ]
+	then
 		MountSnaps
 	fi
 }
@@ -320,9 +501,9 @@ function VerifyParamsAndCreateSnap
 	max_space_reached=0
 	GetZvolUsage
 	CountSnaps
-	if [ $verbose -ne 0 ]
+	if [ "$_VERBOSE" -ne 0 ]
 	then
-		Log "There are currently $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
+		Logger "There are currently $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage" "NOTICE"
 	fi
 
 	while [ $MAX_SNAPSHOTS -lt $SNAP_COUNT ]
@@ -339,14 +520,14 @@ function VerifyParamsAndCreateSnap
 		max_space_reached=1
 	done
 
-	if [ $verbose -ne 0 ]
+	if [ "$_VERBOSE" -ne 0 ]
 	then
-		Log "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage"
+		Logger "After enforcing, there are $SNAP_COUNT snapshots on volume $ZFS_VOLUME for $USED_SPACE % disk usage" "NOTICE"
 	fi
 
 	if [ $max_space_reached -eq 1 ]
 	then
-		LogError "Warning: $MAX_SPACE disk usage was reached."
+		Logger "$MAX_SPACE disk usage was reached." "WARN"
 	fi
 
 	CreateSnap
@@ -360,7 +541,7 @@ function Status
 	CountSnaps
 	echo "Number of snapshots (min < actual < max): $MIN_SNAPSHOTS < $SNAP_COUNT < $MAX_SNAPSHOTS"
 	echo "Disk usage: $ZFS_POOL: $USED_SPACE %"
-	if [ $verbose -ne 0 ]
+	if [ "$_VERBOSE" -ne 0 ]
 	then
 		echo ""
 		echo "Snapshot list"
@@ -376,26 +557,29 @@ function Init
 	set -o pipefail
 	set -o errtrace
 
-        trap TrapStop SIGINT SIGQUIT SIGKILL SIGTERM SIGHUP
+	trap TrapStop SIGINT SIGQUIT SIGTERM SIGHUP
 	trap TrapQuit EXIT
-	if [ "$DEBUG" == "yes" ]
-	then
-        	trap 'TrapError ${LINENO} $?' ERR
-	fi
 
 	ZFS_POOL=$(echo $ZFS_VOLUME | cut -d'/' -f1)
-	LOG_FILE=/var/log/zsnap_${ZFS_VOLUME##*/}.log
+	if [ -w /var/log ]; then
+		LOG_FILE="/var/log/zsnap_${ZFS_VOLUME##*/}.log"
+	else
+		LOG_FILE="./zsnap.${ZFS_VOLUME##*/}.log"
+	fi
 }
 
 function Usage
 {
-	echo "Zsnap $ZSNAP_VERSION written in 2010-2013 by Orsiris "Ozy" de Jong | ozy@netpower.fr"
+	echo "$PROGRAM $PROGRAM_VERSION $PROGRAM_BUILD"
+	echo "$AUTHOR"
+	echo "$CONTACT"
+	echo ""
 	echo "Manages snapshot of a given dataset and mounts them as subdirectories of dataset."
 	echo ""
-        echo "Usage: zsnap /path/to/snapshot.conf [status|createsimple|create|destroyoldest|destroyall|destroy zvolume@YYYY.MM.DD-HH.MM.SS|mount|umount] [--silent] [--verbose]"
+	echo "Usage: zsnap /path/to/snapshot.conf [status|createsimple|create|destroyoldest|destroyall|destroy zvolume@YYYY.MM.DD-HH.MM.SS|mount|umount] [--silent] [--verbose]"
 	echo
-        echo "status - List status info"
-        echo "createsimple - Will create a snapshot and mount it without any prior checks."
+	echo "status - List status info"
+	echo "createsimple - Will create a snapshot and mount it without any prior checks."
 	echo "create - Will verifiy number of snapshots, destroy them until there are less than SNAPMAX, keeping at least SNAPMIN depending of disk usage, then create a new snapshot."
 	echo "destroyoldest - Will destroy the oldest snapshot of the dataset."
 	echo "destroyall - Will destroy all snapshots of the dataset."
@@ -409,20 +593,14 @@ function Usage
 	exit 128
 }
 
-# General flags
-silent=0
-verbose=0
-# Alert flags
-error_alert=0
-
 for i in "$@"
 do
 	case $i in
 		--silent)
-		silent=1
+		_SILENT=1
 		;;
 		--verbose)
-		verbose=1
+		_VERBOSE=1
 		;;
 		--help|-h)
 		Usage
@@ -433,11 +611,11 @@ done
 CheckEnvironment
 if [ $? == 0 ]
 then
-        if [ "$1" != "" ]
-        then
-                LoadConfigFile "$1"
-                if [ $? == 0 ]
-                then
+	if [ "$1" != "" ]
+	then
+		LoadConfigFile "$1"
+		if [ $? == 0 ]
+		then
 			Init
 			case "$2" in
 				destroyoldest)
@@ -478,12 +656,12 @@ then
 				Usage
 				;;
 			esac
-                else
-                        LogError "Configuration file could not be loaded."
-                        exit 1
-                fi
-        else
-                LogError "No configuration file provided."
-                exit 1
-        fi
+		else
+			Logger "Configuration file could not be loaded." "CRITICAL"
+			exit 1
+		fi
+	else
+		Logger "No configuration file provided." "CRITICAL"
+		exit 1
+	fi
 fi

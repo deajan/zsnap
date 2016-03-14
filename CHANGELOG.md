@@ -1,5 +1,10 @@
 ## RECENT CHANGES
 
+14 Mar 2016: v0.9.4 Released
+- Merged function codebase with osync and obackup projects
+- Minor fixes
+
+15 Jun 2013 - 14 Mar 2016: v0.1-v0.9.1
 - Added destroy XX snapshots command
 - Added support for zfsonlinux 0.6.4 zpool output being different
 - Removed unnecessary warning in CountSnaps if there aren't any snaps
