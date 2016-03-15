@@ -3,7 +3,7 @@
 PROGRAM=zsnap
 PROGRAM_BINARY=$PROGRAM".sh"
 PROGRAM_BATCH=$PROGRAM"-batch.sh"
-SCRIPT_BUILD=2016031501
+SCRIPT_BUILD=2016031502
 
 ## osync / obackup daemon install script
 ## Tested on RHEL / CentOS 6 & 7, Fedora 23, Debian 7 & 8, Mint 17 and FreeBSD 8 & 10
@@ -43,7 +43,7 @@ if [ -f "./exlude.list.example" ]; then
 fi
 
 if [ -f "./snapshot.conf" ]; then
-	cp "./snapshot.conf" "/etc/$PROGRAM"
+	cp "./snapshot.conf" "/etc/$PROGRAM/snapshot.conf.example"
 fi
 
 cp "./$PROGRAM_BINARY" "$BIN_DIR"
