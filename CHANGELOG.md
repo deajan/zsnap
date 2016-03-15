@@ -2,6 +2,7 @@
 
 14 Mar 2016: v0.9.4 Released
 - Merged function codebase with osync and obackup projects
+- Added installer script
 - Minor fixes
 
 15 Jun 2013 - 14 Mar 2016: v0.1-v0.9.1
@@ -17,7 +18,3 @@
 - Added option to disable UTC time format use
 - Improved handling of SendAlert function
 - Fixed email sending options
-
-15 Jun 2013
-
-- Initial public release
