@@ -5,7 +5,7 @@ PROGRAM="zsnap"
 AUTHOR="(L) 2010-2016 by Orsiris de Jong"
 CONTACT="http://www.netpower.fr/zsanp - ozy@netpower.fr"
 PROGRAM_VERSION=0.9.4
-PROGRAM_BUILD=2016031401
+PROGRAM_BUILD=2016031501
 
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
@@ -452,7 +452,7 @@ function CreateSnap {
 		Logger "CreateSnap: Cannot create snapshot $ZFS_VOLUME@$SNAP_TIME" "ERROR"
 		return 1
 	fi
-	Log "CreateSnap: Snapshot $ZFS_VOLUME@$SNAP_TIME created"
+	Logger "CreateSnap: Snapshot $ZFS_VOLUME@$SNAP_TIME created" "NOTICE"
 	if [ "$USE_SHADOW_COPY2" == "no" ]
 	then
 		MountSnaps
