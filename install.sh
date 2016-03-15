@@ -72,6 +72,7 @@ if [  -f "./ssh_filter.sh" ]; then
 		chown root:root "$BIN_DIR/ssh_filter.sh"
 		echo "Copied ssh_filter.sh to [$BIN_DIR]."
 	fi
+fi
 
 if [ -f "./osync-srv" ]; then
 	cp "./osync-srv" "$SERVICE_DIR"
