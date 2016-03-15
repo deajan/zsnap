@@ -44,6 +44,7 @@ fi
 
 if [ -f "./snapshot.conf" ]; then
 	cp "./snapshot.conf" "/etc/$PROGRAM"
+fi
 
 cp "./$PROGRAM_BINARY" "$BIN_DIR"
 if [ $? != 0 ]; then
