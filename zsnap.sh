@@ -5,7 +5,7 @@ PROGRAM="zsnap"
 AUTHOR="(L) 2010-2016 by Orsiris de Jong"
 CONTACT="http://www.netpower.fr/zsanp - ozy@netpower.fr"
 PROGRAM_VERSION=0.9.4
-PROGRAM_BUILD=2016031501
+PROGRAM_BUILD=2016040601
 
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
@@ -135,6 +135,7 @@ function SendAlert {
 
 	local mail_no_attachment=
 	local attachment_command=
+	local subject=
 
 	if [ "$DESTINATION_MAILS" == "" ]; then
 		return 0
@@ -238,8 +239,21 @@ function SendAlert {
 		fi
 	fi
 
+	# pfSense specific
+	if [ -f /usr/local/bin/mail.php ]; then
+		cmd="echo \"$MAIL_ALERT_MSG\" | /usr/local/bin/mail.php -s=\"$subject\""
+		Logger "Mail cmd: $cmd" "DEBUG"
+		eval $cmd
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via /usr/local/bin/mail.php (pfsense) !!!" "WARN"
+		else
+			Logger "Sent alert mail using pfSense mail.php." "NOTICE"
+			return 0
+		fi
+	fi
+
 	# If function has not returned 0 yet, assume it's critical that no alert can be sent
-	Logger "Cannot send alert (neither mutt, mail, sendmail nor sendemail found)." "ERROR" # Is not marked critical because execution must continue
+	Logger "Cannot send alert (neither mutt, mail, sendmail, sendemail or pfSense mail.php found)." "ERROR" # Is not marked critical because execution must continue
 
 	# Delete tmp log file
 	if [ -f "$ALERT_LOG_FILE" ]; then
@@ -306,6 +320,11 @@ function CheckEnvironment {
 	then
 		Logger "zpool not present. zsnap cannot work." "CRITICAL"
 		Usage
+	fi
+
+	if [ $(zfs list | grep "^$ZFS_VOLUME" | wc -l) -eq 0 ]; then
+		Logger "No volume [$ZFS_VOLUME] found." "CRITICAL"
+		exit 1
 	fi
 }
 
@@ -564,57 +583,54 @@ do
 	esac
 done
 
-CheckEnvironment
-if [ $? == 0 ]; then
-	if [ "$1" != "" ]
-	then
-		LoadConfigFile "$1"
-		if [ $? == 0 ]
-		then
-			Init
-			case "$2" in
-				destroyoldest)
-				DestroySnaps
-				;;
-				destroyall)
-				DestroySnaps all
-				;;
-				create)
-				VerifyParamsAndCreateSnap
-				;;
-				createsimple)
-				CreateSnap
-				;;
-				status)
-				Status
-				;;
-				mount)
-				MountSnaps
-				;;
-				umount)
-				UnmountSnaps
-				;;
-				destroy)
-				if [ "$3" != "" ]; then
-					if [[ "$3" == *"@"* ]]; then
-						DestroySnap "$3"
-					else
-						DestroySnaps "$3"
-					fi
+if [ "$1" != "" ]
+then
+	LoadConfigFile "$1"
+	if [ $? == 0 ]; then
+		CheckEnvironment
+		Init
+		case "$2" in
+			destroyoldest)
+			DestroySnaps
+			;;
+			destroyall)
+			DestroySnaps all
+			;;
+			create)
+			VerifyParamsAndCreateSnap
+			;;
+			createsimple)
+			CreateSnap
+			;;
+			status)
+			Status
+			;;
+			mount)
+			MountSnaps
+			;;
+			umount)
+			UnmountSnaps
+			;;
+			destroy)
+			if [ "$3" != "" ]; then
+				if [[ "$3" == *"@"* ]]; then
+					DestroySnap "$3"
 				else
-					Usage
+					DestroySnaps "$3"
 				fi
-				;;
-				*)
+			else
 				Usage
-				;;
-			esac
-		else
-			Logger "Configuration file could not be loaded." "CRITICAL"
-			exit 1
-		fi
+			fi
+			;;
+			*)
+			Usage
+			;;
+		esac
 	else
-		Logger "No configuration file provided." "CRITICAL"
+		Logger "Configuration file could not be loaded." "CRITICAL"
 		exit 1
 	fi
+else
+	Logger "No configuration file provided." "CRITICAL"
+	exit 1
 fi
