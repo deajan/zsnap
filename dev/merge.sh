@@ -3,6 +3,7 @@
 ## Merges ofunctions.sh and $PROGRAM
 
 PROGRAM=zsnap
+VERSION=0.9.4
 FUNC_PATH=/home/git/common
 
 PARANOIA_DEBUG_LINE="#__WITH_PARANOIA_DEBUG"

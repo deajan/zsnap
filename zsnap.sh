@@ -5,7 +5,7 @@ PROGRAM="zsnap"
 AUTHOR="(L) 2010-2016 by Orsiris de Jong"
 CONTACT="http://www.netpower.fr/zsanp - ozy@netpower.fr"
 PROGRAM_VERSION=0.9.4
-PROGRAM_BUILD=2016040601
+PROGRAM_BUILD=2016031501
 
 MAIL_ALERT_MSG="Warning: Execution of zsnap for $ZFS_VOLUME (pid $SCRIPT_PID) as $LOCAL_USER@$LOCAL_HOST produced some errors."
 
@@ -39,6 +39,8 @@ LOCAL_HOST=$(hostname)
 ## Default log file until config file is loaded
 if [ -w /var/log ]; then
 	LOG_FILE="/var/log/$PROGRAM.log"
+elif ([ "$HOME" != "" ] && [ -w "$HOME" ]); then
+	LOG_FILE="$HOME/$PROGRAM.log"
 else
 	LOG_FILE="./$PROGRAM.log"
 fi
@@ -66,11 +68,15 @@ function Dummy {
 }
 
 function _Logger {
-	local svalue="${1}" # What to log to screen
+	local svalue="${1}" # What to log to stdout
 	local lvalue="${2:-$svalue}" # What to log to logfile, defaults to screen value
+	local evalue="${3}" # What to log to stderr
 	echo -e "$lvalue" >> "$LOG_FILE"
 
-	if [ $_SILENT -eq 0 ]; then
+	# <OSYNC SPECIFIC> Special case in daemon mode where systemctl doesn't need double timestamps
+	if [ "$sync_on_changes" == "1" ]; then
+		cat <<< "$evalue" 1>&2	# Log to stderr in daemon mode
+	elif [ "$_SILENT" -eq 0 ]; then
 		echo -e "$svalue"
 	fi
 }
@@ -88,15 +94,15 @@ function Logger {
 	# </OSYNC SPECIFIC>
 
 	if [ "$level" == "CRITICAL" ]; then
-		_Logger "$prefix\e[41m$value\e[0m" "$prefix$level:$value"
+		_Logger "$prefix\e[41m$value\e[0m" "$prefix$level:$value" "$level:$value"
 		ERROR_ALERT=1
 		return
 	elif [ "$level" == "ERROR" ]; then
-		_Logger "$prefix\e[91m$value\e[0m" "$prefix$level:$value"
+		_Logger "$prefix\e[91m$value\e[0m" "$prefix$level:$value" "$level:$value"
 		ERROR_ALERT=1
 		return
 	elif [ "$level" == "WARN" ]; then
-		_Logger "$prefix\e[93m$value\e[0m" "$prefix$level:$value"
+		_Logger "$prefix\e[93m$value\e[0m" "$prefix$level:$value" "$level:$value"
 		WARN_ALERT=1
 		return
 	elif [ "$level" == "NOTICE" ]; then
@@ -124,13 +130,26 @@ function KillChilds {
 		done
 	fi
 
-	# Try to kill nicely, if not, wait 30 seconds to let Trap actions happen before killing
-	if [ "$self" == true ]; then
-		kill -s SIGTERM "$pid" || (sleep 30 && kill -9 "$pid" &)
+	# Try to kill nicely, if not, wait 15 seconds to let Trap actions happen before killing
+	if ( [ "$self" == true ] && eval $PROCESS_TEST_CMD > /dev/null 2>&1); then
+		Logger "Sending SIGTERM to process [$pid]." "DEBUG"
+		kill -s SIGTERM "$pid"
+		if [ $? != 0 ]; then
+			sleep 15
+			Logger "Sending SIGTERM to process [$pid] failed." "DEBUG"
+			kill -9 "$pid"
+			if [ $? != 0 ]; then
+				Logger "Sending SIGKILL to process [$pid] failed." "DEBUG"
+				return 1
+			fi
+		fi
+		return 0
+	else
+		return 0
 	fi
-	# sleep 30 needs to wait before killing itself
 }
 
+# Script specific email alert function, please use SendEmail function for generic sends
 function SendAlert {
 
 	local mail_no_attachment=
@@ -173,9 +192,7 @@ function SendAlert {
 		attachment_command="-a $ALERT_LOG_FILE"
 	fi
 	if type mutt > /dev/null 2>&1 ; then
-		cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mutt) -x -s \"$subject\" $DESTINATION_MAILS $attachment_command"
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo "$MAIL_ALERT_MSG" | $(type -p mutt) -x -s "$subject" $DESTINATION_MAILS $attachment_command
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via $(type -p mutt) !!!" "WARN"
 		else
@@ -188,18 +205,14 @@ function SendAlert {
 		if [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V | grep "GNU" > /dev/null; then
 			attachment_command="-A $ALERT_LOG_FILE"
 		elif [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V > /dev/null; then
-			attachment_command="-a $ALERT_LOG_FILE"
+			attachment_command="-a$ALERT_LOG_FILE"
 		else
 			attachment_command=""
 		fi
-		cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mail) $attachment_command -s \"$subject\" $DESTINATION_MAILS"
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo "$MAIL_ALERT_MSG" | $(type -p mail) $attachment_command -s "$subject" $DESTINATION_MAILS
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via $(type -p mail) with attachments !!!" "WARN"
-			cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mail) -s \"$subject\" $DESTINATION_MAILS"
-			Logger "Mail cmd: $cmd" "DEBUG"
-			eval $cmd
+			echo "$MAIL_ALERT_MSG" | $(type -p mail) -s "$subject" $DESTINATION_MAILS
 			if [ $? != 0 ]; then
 				Logger "Cannot send alert email via $(type -p mail) without attachments !!!" "WARN"
 			else
@@ -213,9 +226,7 @@ function SendAlert {
 	fi
 
 	if type sendmail > /dev/null 2>&1 ; then
-		cmd="echo -e \"Subject:$subject\r\n$MAIL_ALERT_MSG\" | $(type -p sendmail) $DESTINATION_MAILS"
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo -e "Subject:$subject\r\n$MAIL_ALERT_MSG" | $(type -p sendmail) $DESTINATION_MAILS
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via $(type -p sendmail) !!!" "WARN"
 		else
@@ -241,9 +252,7 @@ function SendAlert {
 
 	# pfSense specific
 	if [ -f /usr/local/bin/mail.php ]; then
-		cmd="echo \"$MAIL_ALERT_MSG\" | /usr/local/bin/mail.php -s=\"$subject\""
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo "$MAIL_ALERT_MSG" | /usr/local/bin/mail.php -s="$subject"
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via /usr/local/bin/mail.php (pfsense) !!!" "WARN"
 		else
@@ -253,12 +262,90 @@ function SendAlert {
 	fi
 
 	# If function has not returned 0 yet, assume it's critical that no alert can be sent
-	Logger "Cannot send alert (neither mutt, mail, sendmail, sendemail or pfSense mail.php found)." "ERROR" # Is not marked critical because execution must continue
+	Logger "Cannot send alert (neither mutt, mail, sendmail, sendemail or pfSense mail.php could be used)." "ERROR" # Is not marked critical because execution must continue
 
 	# Delete tmp log file
 	if [ -f "$ALERT_LOG_FILE" ]; then
 		rm "$ALERT_LOG_FILE"
 	fi
+}
+
+# Generic email sending function. Usage:
+# SendEmail "subject" "Body text" "receiver@email.fr receiver2@otheremail.fr" "/path/to/attachment.file"
+function SendEmail {
+	local subject="${1}"
+	local message="${2}"
+	local destination_mails="${3}"
+	local attachment="{$4}"
+
+
+	local mail_no_attachment=
+	local attachment_command=
+
+	if [ ! -f "$attachment" ]; then
+		attachment_command="-a $ALERT_LOG_FILE"
+		mail_no_attachment=1
+	else
+		mail_no_attachment=0
+	fi
+
+	if type mutt > /dev/null 2>&1 ; then
+		echo "$message" | $(type -p mutt) -x -s "$subject" "$destination_mails" $attachment_command
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p mutt) !!!" "WARN"
+		else
+			Logger "Sent alert mail using mutt." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type mail > /dev/null 2>&1 ; then
+		if [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V | grep "GNU" > /dev/null; then
+			attachment_command="-A $attachment"
+		elif [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V > /dev/null; then
+			attachment_command="-a$attachment"
+		else
+			attachment_command=""
+		fi
+		echo "$message" | $(type -p mail) $attachment_command -s "$subject" "$destination_mails"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p mail) with attachments !!!" "WARN"
+			echo "$message" | $(type -p mail) -s "$subject" "$destination_mails"
+			if [ $? != 0 ]; then
+				Logger "Cannot send alert email via $(type -p mail) without attachments !!!" "WARN"
+			else
+				Logger "Sent alert mail using mail command without attachment." "NOTICE"
+				return 0
+			fi
+		else
+			Logger "Sent alert mail using mail command." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type sendmail > /dev/null 2>&1 ; then
+		echo -e "Subject:$subject\r\n$message" | $(type -p sendmail) "$destination_mails"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p sendmail) !!!" "WARN"
+		else
+			Logger "Sent alert mail using sendmail command without attachment." "NOTICE"
+			return 0
+		fi
+	fi
+
+	# pfSense specific
+	if [ -f /usr/local/bin/mail.php ]; then
+		echo "$message" | /usr/local/bin/mail.php -s="$subject"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via /usr/local/bin/mail.php (pfsense) !!!" "WARN"
+		else
+			Logger "Sent alert mail using pfSense mail.php." "NOTICE"
+			return 0
+		fi
+	fi
+
+	# If function has not returned 0 yet, assume it's critical that no alert can be sent
+	Logger "Cannot send alert (neither mutt, mail, sendmail, sendemail or pfSense mail.php could be used)." "ERROR" # Is not marked critical because execution must continue
 }
 
 function TrapError {
@@ -320,11 +407,6 @@ function CheckEnvironment {
 	then
 		Logger "zpool not present. zsnap cannot work." "CRITICAL"
 		Usage
-	fi
-
-	if [ $(zfs list | grep "^$ZFS_VOLUME" | wc -l) -eq 0 ]; then
-		Logger "No volume [$ZFS_VOLUME] found." "CRITICAL"
-		exit 1
 	fi
 }
 
@@ -583,54 +665,57 @@ do
 	esac
 done
 
-if [ "$1" != "" ]
-then
-	LoadConfigFile "$1"
-	if [ $? == 0 ]; then
-		CheckEnvironment
-		Init
-		case "$2" in
-			destroyoldest)
-			DestroySnaps
-			;;
-			destroyall)
-			DestroySnaps all
-			;;
-			create)
-			VerifyParamsAndCreateSnap
-			;;
-			createsimple)
-			CreateSnap
-			;;
-			status)
-			Status
-			;;
-			mount)
-			MountSnaps
-			;;
-			umount)
-			UnmountSnaps
-			;;
-			destroy)
-			if [ "$3" != "" ]; then
-				if [[ "$3" == *"@"* ]]; then
-					DestroySnap "$3"
+CheckEnvironment
+if [ $? == 0 ]; then
+	if [ "$1" != "" ]
+	then
+		LoadConfigFile "$1"
+		if [ $? == 0 ]
+		then
+			Init
+			case "$2" in
+				destroyoldest)
+				DestroySnaps
+				;;
+				destroyall)
+				DestroySnaps all
+				;;
+				create)
+				VerifyParamsAndCreateSnap
+				;;
+				createsimple)
+				CreateSnap
+				;;
+				status)
+				Status
+				;;
+				mount)
+				MountSnaps
+				;;
+				umount)
+				UnmountSnaps
+				;;
+				destroy)
+				if [ "$3" != "" ]; then
+					if [[ "$3" == *"@"* ]]; then
+						DestroySnap "$3"
+					else
+						DestroySnaps "$3"
+					fi
 				else
-					DestroySnaps "$3"
+					Usage
 				fi
-			else
+				;;
+				*)
 				Usage
-			fi
-			;;
-			*)
-			Usage
-			;;
-		esac
+				;;
+			esac
+		else
+			Logger "Configuration file could not be loaded." "CRITICAL"
+			exit 1
+		fi
 	else
-		Logger "Configuration file could not be loaded." "CRITICAL"
+		Logger "No configuration file provided." "CRITICAL"
 		exit 1
 	fi
-else
-	Logger "No configuration file provided." "CRITICAL"
-	exit 1
 fi

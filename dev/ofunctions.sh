@@ -1,4 +1,4 @@
-## FUNC_BUILD=2016031401
+## FUNC_BUILD=2016041402
 ## BEGIN Generic functions for osync & obackup written in 2013-2016 by Orsiris de Jong - http://www.netpower.fr - ozy@netpower.fr
 
 ## type -p does not work on platforms other than linux (bash). If if does not work, always assume output is not a zero exitcode
@@ -54,6 +54,8 @@ LOCAL_HOST=$(hostname)
 ## Default log file until config file is loaded
 if [ -w /var/log ]; then
 	LOG_FILE="/var/log/$PROGRAM.log"
+elif ([ "$HOME" != "" ] && [ -w "$HOME" ]); then
+	LOG_FILE="$HOME/$PROGRAM.log"
 else
 	LOG_FILE="./$PROGRAM.log"
 fi
@@ -82,11 +84,15 @@ function Dummy {
 }
 
 function _Logger {
-	local svalue="${1}" # What to log to screen
+	local svalue="${1}" # What to log to stdout
 	local lvalue="${2:-$svalue}" # What to log to logfile, defaults to screen value
+	local evalue="${3}" # What to log to stderr
 	echo -e "$lvalue" >> "$LOG_FILE"
 
-	if [ $_SILENT -eq 0 ]; then
+	# <OSYNC SPECIFIC> Special case in daemon mode where systemctl doesn't need double timestamps
+	if [ "$sync_on_changes" == "1" ]; then
+		cat <<< "$evalue" 1>&2	# Log to stderr in daemon mode
+	elif [ "$_SILENT" -eq 0 ]; then
 		echo -e "$svalue"
 	fi
 }
@@ -104,15 +110,15 @@ function Logger {
 	# </OSYNC SPECIFIC>
 
 	if [ "$level" == "CRITICAL" ]; then
-		_Logger "$prefix\e[41m$value\e[0m" "$prefix$level:$value"
+		_Logger "$prefix\e[41m$value\e[0m" "$prefix$level:$value" "$level:$value"
 		ERROR_ALERT=1
 		return
 	elif [ "$level" == "ERROR" ]; then
-		_Logger "$prefix\e[91m$value\e[0m" "$prefix$level:$value"
+		_Logger "$prefix\e[91m$value\e[0m" "$prefix$level:$value" "$level:$value"
 		ERROR_ALERT=1
 		return
 	elif [ "$level" == "WARN" ]; then
-		_Logger "$prefix\e[93m$value\e[0m" "$prefix$level:$value"
+		_Logger "$prefix\e[93m$value\e[0m" "$prefix$level:$value" "$level:$value"
 		WARN_ALERT=1
 		return
 	elif [ "$level" == "NOTICE" ]; then
@@ -141,22 +147,37 @@ function KillChilds {
 
 	if children="$(pgrep -P "$pid")"; then
 		for child in $children; do
+			Logger "Launching KillChilds \"$child\" true" "DEBUG"	#__WITH_PARANOIA_DEBUG
 			KillChilds "$child" true
 		done
 	fi
 
-	# Try to kill nicely, if not, wait 30 seconds to let Trap actions happen before killing
-	if [ "$self" == true ]; then
-		kill -s SIGTERM "$pid" || (sleep 30 && kill -9 "$pid" &)
+	# Try to kill nicely, if not, wait 15 seconds to let Trap actions happen before killing
+	if ( [ "$self" == true ] && eval $PROCESS_TEST_CMD > /dev/null 2>&1); then
+		Logger "Sending SIGTERM to process [$pid]." "DEBUG"
+		kill -s SIGTERM "$pid"
+		if [ $? != 0 ]; then
+			sleep 15
+			Logger "Sending SIGTERM to process [$pid] failed." "DEBUG"
+			kill -9 "$pid"
+			if [ $? != 0 ]; then
+				Logger "Sending SIGKILL to process [$pid] failed." "DEBUG"
+				return 1
+			fi
+		fi
+		return 0
+	else
+		return 0
 	fi
-	# sleep 30 needs to wait before killing itself
 }
 
+# Script specific email alert function, please use SendEmail function for generic sends
 function SendAlert {
 	__CheckArguments 0 $# ${FUNCNAME[0]} "$@"	#__WITH_PARANOIA_DEBUG
 
 	local mail_no_attachment=
 	local attachment_command=
+	local subject=
 
 	if [ "$DESTINATION_MAILS" == "" ]; then
 		return 0
@@ -194,9 +215,7 @@ function SendAlert {
 		attachment_command="-a $ALERT_LOG_FILE"
 	fi
 	if type mutt > /dev/null 2>&1 ; then
-		cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mutt) -x -s \"$subject\" $DESTINATION_MAILS $attachment_command"
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo "$MAIL_ALERT_MSG" | $(type -p mutt) -x -s "$subject" $DESTINATION_MAILS $attachment_command
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via $(type -p mutt) !!!" "WARN"
 		else
@@ -209,18 +228,14 @@ function SendAlert {
 		if [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V | grep "GNU" > /dev/null; then
 			attachment_command="-A $ALERT_LOG_FILE"
 		elif [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V > /dev/null; then
-			attachment_command="-a $ALERT_LOG_FILE"
+			attachment_command="-a$ALERT_LOG_FILE"
 		else
 			attachment_command=""
 		fi
-		cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mail) $attachment_command -s \"$subject\" $DESTINATION_MAILS"
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo "$MAIL_ALERT_MSG" | $(type -p mail) $attachment_command -s "$subject" $DESTINATION_MAILS
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via $(type -p mail) with attachments !!!" "WARN"
-			cmd="echo \"$MAIL_ALERT_MSG\" | $(type -p mail) -s \"$subject\" $DESTINATION_MAILS"
-			Logger "Mail cmd: $cmd" "DEBUG"
-			eval $cmd
+			echo "$MAIL_ALERT_MSG" | $(type -p mail) -s "$subject" $DESTINATION_MAILS
 			if [ $? != 0 ]; then
 				Logger "Cannot send alert email via $(type -p mail) without attachments !!!" "WARN"
 			else
@@ -234,9 +249,7 @@ function SendAlert {
 	fi
 
 	if type sendmail > /dev/null 2>&1 ; then
-		cmd="echo -e \"Subject:$subject\r\n$MAIL_ALERT_MSG\" | $(type -p sendmail) $DESTINATION_MAILS"
-		Logger "Mail cmd: $cmd" "DEBUG"
-		eval $cmd
+		echo -e "Subject:$subject\r\n$MAIL_ALERT_MSG" | $(type -p sendmail) $DESTINATION_MAILS
 		if [ $? != 0 ]; then
 			Logger "Cannot send alert email via $(type -p sendmail) !!!" "WARN"
 		else
@@ -260,13 +273,103 @@ function SendAlert {
 		fi
 	fi
 
+	# pfSense specific
+	if [ -f /usr/local/bin/mail.php ]; then
+		echo "$MAIL_ALERT_MSG" | /usr/local/bin/mail.php -s="$subject"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via /usr/local/bin/mail.php (pfsense) !!!" "WARN"
+		else
+			Logger "Sent alert mail using pfSense mail.php." "NOTICE"
+			return 0
+		fi
+	fi
+
 	# If function has not returned 0 yet, assume it's critical that no alert can be sent
-	Logger "Cannot send alert (neither mutt, mail, sendmail nor sendemail found)." "ERROR" # Is not marked critical because execution must continue
+	Logger "Cannot send alert (neither mutt, mail, sendmail, sendemail or pfSense mail.php could be used)." "ERROR" # Is not marked critical because execution must continue
 
 	# Delete tmp log file
 	if [ -f "$ALERT_LOG_FILE" ]; then
 		rm "$ALERT_LOG_FILE"
 	fi
+}
+
+# Generic email sending function. Usage:
+# SendEmail "subject" "Body text" "receiver@email.fr receiver2@otheremail.fr" "/path/to/attachment.file"
+function SendEmail {
+	local subject="${1}"
+	local message="${2}"
+	local destination_mails="${3}"
+	local attachment="{$4}"
+
+	__CheckArguments 4 $# ${FUNCNAME[0]} "$@"	#__WITH_PARANOIA_DEBUG
+
+	local mail_no_attachment=
+	local attachment_command=
+
+	if [ ! -f "$attachment" ]; then
+		attachment_command="-a $ALERT_LOG_FILE"
+		mail_no_attachment=1
+	else
+		mail_no_attachment=0
+	fi
+
+	if type mutt > /dev/null 2>&1 ; then
+		echo "$message" | $(type -p mutt) -x -s "$subject" "$destination_mails" $attachment_command
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p mutt) !!!" "WARN"
+		else
+			Logger "Sent alert mail using mutt." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type mail > /dev/null 2>&1 ; then
+		if [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V | grep "GNU" > /dev/null; then
+			attachment_command="-A $attachment"
+		elif [ "$mail_no_attachment" -eq 0 ] && $(type -p mail) -V > /dev/null; then
+			attachment_command="-a$attachment"
+		else
+			attachment_command=""
+		fi
+		echo "$message" | $(type -p mail) $attachment_command -s "$subject" "$destination_mails"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p mail) with attachments !!!" "WARN"
+			echo "$message" | $(type -p mail) -s "$subject" "$destination_mails"
+			if [ $? != 0 ]; then
+				Logger "Cannot send alert email via $(type -p mail) without attachments !!!" "WARN"
+			else
+				Logger "Sent alert mail using mail command without attachment." "NOTICE"
+				return 0
+			fi
+		else
+			Logger "Sent alert mail using mail command." "NOTICE"
+			return 0
+		fi
+	fi
+
+	if type sendmail > /dev/null 2>&1 ; then
+		echo -e "Subject:$subject\r\n$message" | $(type -p sendmail) "$destination_mails"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via $(type -p sendmail) !!!" "WARN"
+		else
+			Logger "Sent alert mail using sendmail command without attachment." "NOTICE"
+			return 0
+		fi
+	fi
+
+	# pfSense specific
+	if [ -f /usr/local/bin/mail.php ]; then
+		echo "$message" | /usr/local/bin/mail.php -s="$subject"
+		if [ $? != 0 ]; then
+			Logger "Cannot send alert email via /usr/local/bin/mail.php (pfsense) !!!" "WARN"
+		else
+			Logger "Sent alert mail using pfSense mail.php." "NOTICE"
+			return 0
+		fi
+	fi
+
+	# If function has not returned 0 yet, assume it's critical that no alert can be sent
+	Logger "Cannot send alert (neither mutt, mail, sendmail, sendemail or pfSense mail.php could be used)." "ERROR" # Is not marked critical because execution must continue
 }
 
 function TrapError {
@@ -333,10 +436,12 @@ function Spinner {
 	esac
 }
 
+# obsolete, use StripQuotes
 function SedStripQuotes {
         echo $(echo $1 | sed "s/^\([\"']\)\(.*\)\1\$/\2/g")
 }
 
+# Usage: var=$(StripSingleQuotes "$var")
 function StripSingleQuotes {
 	local string="${1}"
 	string="${string/#\'/}" # Remove singlequote if it begins string
@@ -344,6 +449,7 @@ function StripSingleQuotes {
 	echo "$string"
 }
 
+# Usage: var=$(StripDoubleQuotes "$var")
 function StripDoubleQuotes {
 	local string="${1}"
 	string="${string/#\"/}"
@@ -400,13 +506,17 @@ function GetLocalOS {
 		*"BSD"*)
 		LOCAL_OS="BSD"
 		;;
-		*"MINGW32"*)
+		*"MINGW32"*|*"CYGWIN"*)
 		LOCAL_OS="msys"
 		;;
 		*"Darwin"*)
 		LOCAL_OS="MacOSX"
 		;;
 		*)
+		if [ "$IGNORE_OS_TYPE" == "yes" ]; then		#DOC: Undocumented option
+			Logger "Running on unknown local OS [$local_os_var]." "WARN"
+			return
+		fi
 		Logger "Running on >> $local_os_var << not supported. Please report to the author." "ERROR"
 		exit 1
 		;;
@@ -456,7 +566,7 @@ function GetRemoteOS {
 			*"BSD"*)
 			REMOTE_OS="BSD"
 			;;
-			*"MINGW32"*)
+			*"MINGW32"*|*"CYGWIN"*)
 			REMOTE_OS="msys"
 			;;
 			*"Darwin"*)
@@ -467,6 +577,10 @@ function GetRemoteOS {
 			exit 1
 			;;
 			*)
+			if [ "$IGNORE_OS_TYPE" == "yes" ]; then		#DOC: Undocumented option
+				Logger "Running on unknown remote OS [$remote_os_var]." "WARN"
+				return
+			fi
 			Logger "Running on remote OS failed. Please report to the author if the OS is not supported." "CRITICAL"
 			Logger "Remote OS said:\n$remote_os_var" "CRITICAL"
 			exit 1
@@ -497,29 +611,25 @@ function WaitForTaskCompletion {
 		if [ $((($exec_time + 1) % $KEEP_LOGGING)) -eq 0 ]; then
 			if [ $log_ttime -ne $exec_time ]; then
 				log_ttime=$exec_time
-				Logger "Current task still running." "NOTICE"
+				Logger "Current task still running with pid [$pid]." "NOTICE"
 			fi
 		fi
 		if [ $exec_time -gt $soft_max_time ]; then
 			if [ $soft_alert -eq 0 ] && [ $soft_max_time -ne 0 ]; then
-				Logger "Max soft execution time exceeded for task [$caller_name]." "WARN"
+				Logger "Max soft execution time exceeded for task [$caller_name] with pid [$pid]." "WARN"
 				soft_alert=1
 				SendAlert
 
 			fi
 			if [ $exec_time -gt $hard_max_time ] && [ $hard_max_time -ne 0 ]; then
-				Logger "Max hard execution time exceeded for task [$caller_name]. Stopping task execution." "ERROR"
-				kill -s SIGTERM $pid
+				Logger "Max hard execution time exceeded for task [$caller_name] with pid [$pid]. Stopping task execution." "ERROR"
+				KillChilds $pid
 				if [ $? == 0 ]; then
-					Logger "Task stopped succesfully" "NOTICE"
+					Logger "Task stopped successfully" "NOTICE"
+					return 0
 				else
-					Logger "Sending SIGTERM to proces failed. Trying the hard way." "ERROR"
-					sleep 5 && kill -9 $pid
-					if [ $? != 0 ]; then
-						Logger "Could not stop task." "ERROR"
-					fi
+					return 1
 				fi
-				return 1
 			fi
 		fi
 		sleep $SLEEP_TIME
@@ -561,17 +671,13 @@ function WaitForCompletion {
 			fi
 			if [ $SECONDS -gt $hard_max_time ] && [ $hard_max_time != 0 ]; then
 				Logger "Max hard execution time exceeded for script in [$caller_name]. Stopping current task execution." "ERROR"
-				kill -s SIGTERM $pid
+				KillChilds $pid
 				if [ $? == 0 ]; then
-					Logger "Task stopped succesfully" "NOTICE"
+					Logger "Task stopped successfully" "NOTICE"
+					return 0
 				else
-					Logger "Sending SIGTERM to proces failed. Trying the hard way." "ERROR"
-					kill -9 $pid
-					if [ $? != 0 ]; then
-						Logger "Could not stop task." "ERROR"
-					fi
+					return 1
 				fi
-				return 1
 			fi
 		fi
 		sleep $SLEEP_TIME
@@ -681,7 +787,7 @@ function CheckConnectivityRemoteHost {
 			eval "$PING_CMD $REMOTE_HOST > /dev/null 2>&1" &
 			WaitForTaskCompletion $! 180 180 ${FUNCNAME[0]}
 			if [ $? != 0 ]; then
-				Logger "Cannot ping $REMOTE_HOST" "CRITICAL"
+				Logger "Cannot ping $REMOTE_HOST" "ERROR"
 				return 1
 			fi
 		fi
@@ -749,7 +855,7 @@ function __CheckArguments {
                 local counted_arguments=$((iterate-4))
 
                 if [ $counted_arguments -ne $number_of_arguments ]; then
-                        Logger "Function $function_name may have inconsistent number of arguments. Expected: $number_of_arguments, count: $counted_arguments, see log file." "ERROR"
+                        Logger "Function $function_name may have inconsistent number of arguments. Expected: $number_of_arguments, count: $counted_arguments, bash seen: $number_of_given_arguments. see log file." "ERROR"
                         Logger "Arguments passed: $arg_list" "ERROR"
                 fi
 	fi
@@ -758,8 +864,8 @@ function __CheckArguments {
 #__END_WITH_PARANOIA_DEBUG
 
 function RsyncPatternsAdd {
-	local pattern="${1}"
-	local pattern_type="${2}"	# exclude or include
+	local pattern_type="${1}"	# exclude or include
+	local pattern="${2}"
 	__CheckArguments 2 $# ${FUNCNAME[0]} "$@"	#__WITH_PARANOIA_DEBUG
 
 	local rest=
@@ -788,8 +894,8 @@ function RsyncPatternsAdd {
 }
 
 function RsyncPatternsFromAdd {
-        local pattern_from="${1}"
-        local pattern_type="${2}"
+        local pattern_type="${1}"
+        local pattern_from="${2}"
 	__CheckArguments 2 $# ${FUNCNAME[0]} "$@"    #__WITH_PARANOIA_DEBUG
 
 	local pattern_from=
@@ -808,22 +914,22 @@ function RsyncPatterns {
         __CheckArguments 0 $# ${FUNCNAME[0]} "$@"    #__WITH_PARANOIA_DEBUG
 
         if [ "$RSYNC_PATTERN_FIRST" == "exclude" ]; then
-                RsyncPatternsAdd "$RSYNC_EXCLUDE_PATTERN" "exclude"
+                RsyncPatternsAdd "exclude" "$RSYNC_EXCLUDE_PATTERN"
                 if [ "$RSYNC_EXCLUDE_FROM" != "" ]; then
-                        RsyncPatternsFromAdd "$RSYNC_EXCLUDE_FROM" "exclude"
+                        RsyncPatternsFromAdd "exclude" "$RSYNC_EXCLUDE_FROM"
                 fi
                 RsyncPatternsAdd "$RSYNC_INCLUDE_PATTERN" "include"
                 if [ "$RSYNC_INCLUDE_FROM" != "" ]; then
-                        RsyncPatternsFromAdd "$RSYNC_INCLUDE_FROM" "include"
+                        RsyncPatternsFromAdd "include" "$RSYNC_INCLUDE_FROM"
                 fi
         elif [ "$RSYNC_PATTERN_FIRST" == "include" ]; then
-                RsyncPatternsAdd "$RSYNC_INCLUDE_PATTERN" "include"
+                RsyncPatternsAdd "include" "$RSYNC_INCLUDE_PATTERN"
                 if [ "$RSYNC_INCLUDE_FROM" != "" ]; then
-                        RsyncPatternsFromAdd "$RSYNC_INCLUDE_FROM" "include"
+                        RsyncPatternsFromAdd "include" "$RSYNC_INCLUDE_FROM"
                 fi
-                RsyncPatternsAdd "$RSYNC_EXCLUDE_PATTERN" "exclude"
+                RsyncPatternsAdd "exclude" "$RSYNC_EXCLUDE_PATTERN"
                 if [ "$RSYNC_EXCLUDE_FROM" != "" ]; then
-                        RsyncPatternsFromAdd "$RSYNC_EXCLUDE_FROM" "exclude"
+                        RsyncPatternsFromAdd "exclude" "$RSYNC_EXCLUDE_FROM"
                 fi
         else
                 Logger "Bogus RSYNC_PATTERN_FIRST value in config file. Will not use rsync patterns." "WARN"
@@ -839,6 +945,11 @@ function PreInit {
         else
                 SSH_COMP=
         fi
+
+	## Ignore SSH known host verification
+	if [ "$SSH_IGNORE_KNOWN_HOSTS" == "yes" ]; then
+		SSH_OPTS="-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+	fi
 
         ## Support for older config files without RSYNC_EXECUTABLE option
         if [ "$RSYNC_EXECUTABLE" == "" ]; then
@@ -941,9 +1052,9 @@ function PostInit {
         __CheckArguments 0 $# ${FUNCNAME[0]} "$@"    #__WITH_PARANOIA_DEBUG
 
 	# Define remote commands
-        SSH_CMD="$(type -p ssh) $SSH_COMP -i $SSH_RSA_PRIVATE_KEY $REMOTE_USER@$REMOTE_HOST -p $REMOTE_PORT"
+        SSH_CMD="$(type -p ssh) $SSH_COMP -i $SSH_RSA_PRIVATE_KEY $SSH_OPTS $REMOTE_USER@$REMOTE_HOST -p $REMOTE_PORT"
         SCP_CMD="$(type -p scp) $SSH_COMP -i $SSH_RSA_PRIVATE_KEY -P $REMOTE_PORT"
-        RSYNC_SSH_CMD="$(type -p ssh) $SSH_COMP -i $SSH_RSA_PRIVATE_KEY -p $REMOTE_PORT"
+        RSYNC_SSH_CMD="$(type -p ssh) $SSH_COMP -i $SSH_RSA_PRIVATE_KEY $SSH_OPTS -p $REMOTE_PORT"
 }
 
 function InitLocalOSSettings {
@@ -955,10 +1066,10 @@ function InitLocalOSSettings {
         ## Ping command is not the same
         if [ "$LOCAL_OS" == "msys" ]; then
                 FIND_CMD=$(dirname $BASH)/find
-                #TODO: The following command needs to be checked on msys. Does the $1 variable substitution work ?
                 # PROCESS_TEST_CMD assumes there is a variable $pid
+		# Tested on MSYS and cygwin
                 PROCESS_TEST_CMD='ps -a | awk "{\$1=\$1}\$1" | awk "{print \$1}" | grep $pid'
-                PING_CMD="ping -n 2"
+                PING_CMD='$SYSTEMROOT\system32\ping -n 2'
         else
                 FIND_CMD=find
                 # PROCESS_TEST_CMD assumes there is a variable $pid
@@ -969,8 +1080,10 @@ function InitLocalOSSettings {
         ## Stat command has different syntax on Linux and FreeBSD/MacOSX
         if [ "$LOCAL_OS" == "MacOSX" ] || [ "$LOCAL_OS" == "BSD" ]; then
                 STAT_CMD="stat -f \"%Sm\""
+		STAT_CTIME_MTIME_CMD="stat -f %N;%c;%m"
         else
                 STAT_CMD="stat --format %y"
+		STAT_CTIME_MTIME_CMD="stat -c %n;%Z;%Y"
         fi
 }
 
@@ -987,6 +1100,16 @@ function InitRemoteOSSettings {
         else
                 REMOTE_FIND_CMD=find
         fi
+
+        ## Stat command has different syntax on Linux and FreeBSD/MacOSX
+        if [ "$LOCAL_OS" == "MacOSX" ] || [ "$LOCAL_OS" == "BSD" ]; then
+                REMOTE_STAT_CMD="stat -f \"%Sm\""
+		REMOTE_STAT_CTIME_MTIME_CMD="stat -f \\\"%N;%c;%m\\\""
+        else
+                REMOTE_STAT_CMD="stat --format %y"
+		REMOTE_STAT_CTIME_MTIME_CMD="stat -c \\\"%n;%Z;%Y\\\""
+        fi
+
 }
 
 ## END Generic functions

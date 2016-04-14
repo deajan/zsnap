@@ -2,10 +2,20 @@
 
 ###### ZFS snapshot management script - Samba vfs_object previous versions friendly
 ###### (L) 2010-2016 by Orsiris de Jong (www.netpower.fr)
-###### Config file rev 2007201301
+###### Config file rev 2016031501
 
 ## Name of the zfs dataset you want snapshots to be created on
 ZFS_VOLUME=storage/dataset
+
+DAYS_TO_KEEP=
+WEEKLY_TO_KEEP=
+MONTHLY_TO_KEEP=
+YEARLY_TO_KEEP=
+
+
+
+
+
 
 ## Minimum number of snapshots to keep
 MIN_SNAPSHOTS=60
